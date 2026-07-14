@@ -128,8 +128,10 @@ if (isMainThread) {
   let sharesFound = 0;
   let sharesAccepted = 0;
   let totalHashesGlobal = 0;
+  let bestDifficulty = 0;
+  let bestDifficultyHash = '';
 
-  // פונקציה לשמירת סטטיסטיקה לקובץ
+  // פונקציה לשמירת סטטיסטיקה לקובץ (כתיבה אטומית למניעת שגיאות/חלקים חסרים)
   function saveStatsSync() {
     const totalKHs = workers.reduce((sum, w) => sum + (w.hashrateKHs || 0), 0);
     const uptimeSec = Math.floor((Date.now() - appStartTime) / 1000);
@@ -139,10 +141,14 @@ if (isMainThread) {
       shares_accepted: sharesAccepted,
       hashrate_khs: parseFloat(totalKHs.toFixed(1)),
       total_hashes: totalHashesGlobal,
-      difficulty: difficulty
+      difficulty: difficulty,
+      best_difficulty: bestDifficulty,
+      best_difficulty_hash: bestDifficultyHash
     };
     try {
-      fs.writeFileSync('stats.json', JSON.stringify(stats, null, 2));
+      const tempPath = 'stats.json.tmp';
+      fs.writeFileSync(tempPath, JSON.stringify(stats, null, 2));
+      fs.renameSync(tempPath, 'stats.json');
       originalLog('💾 הסטטיסטיקה נשמרה בהצלחה ל-stats.json');
     } catch (err) {
       originalError('שגיאה בשמירת סטטיסטיקה:', err.message);
@@ -156,7 +162,9 @@ if (isMainThread) {
       sharesFound = data.shares_found || 0;
       sharesAccepted = data.shares_accepted || 0;
       totalHashesGlobal = data.total_hashes || 0;
-      console.log(`📊 נתונים קודמים נטענו מ-stats.json: נמצאו ${sharesFound}, התקבלו ${sharesAccepted}`);
+      bestDifficulty = data.best_difficulty || 0;
+      bestDifficultyHash = data.best_difficulty_hash || '';
+      console.log(`📊 נתונים קודמים נטענו מ-stats.json: נמצאו ${sharesFound}, התקבלו ${sharesAccepted}, קושי שיא: ${bestDifficulty}`);
     }
   } catch (e) {
     console.error('שגיאה בטעינת stats.json:', e.message);
@@ -185,6 +193,7 @@ if (isMainThread) {
         worker.on('message', (msg) => {
           if (msg.type === 'share') {
             sharesFound++;
+            saveStatsSync(); // שמירה מיידית של מציאת ה-Share
             console.log(`🎉 [Worker] Share נמצא! שולח ל-Pool...`);
             const submitId = msgId;
             pendingSubmissions.add(submitId);
@@ -198,6 +207,14 @@ if (isMainThread) {
           } else if (msg.type === 'hashrate') {
             worker.hashrateKHs = msg.hashrateKHs;
             totalHashesGlobal += msg.newHashes;
+          } else if (msg.type === 'best_difficulty') {
+            if (msg.difficulty > bestDifficulty) {
+              bestDifficulty = msg.difficulty;
+              bestDifficultyHash = msg.hash;
+              saveStatsSync();
+              console.log(`🚀 קושי שיא חדש שנמצא על ידי המעבד: ${bestDifficulty.toFixed(4)} (האש: ${bestDifficultyHash})`);
+              workers.forEach(w => w.postMessage({ type: 'best_difficulty', globalBestDifficulty: bestDifficulty }));
+            }
           }
         });
         
@@ -208,7 +225,8 @@ if (isMainThread) {
             job: currentJob, 
             difficulty, 
             extranonce1, 
-            extranonce2Size 
+            extranonce2Size,
+            globalBestDifficulty: bestDifficulty
           });
         }
         workers.push(worker);
@@ -376,7 +394,9 @@ if (isMainThread) {
         total_hashes: totalHashesGlobal,
         difficulty: difficulty,
         logs: logs, // שליחת הלוגים האחרונים
-        health: systemHealth
+        health: systemHealth,
+        best_difficulty: bestDifficulty,
+        best_difficulty_hash: bestDifficultyHash
       };
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify(stats));
@@ -516,6 +536,11 @@ if (isMainThread) {
             <div class="stat"><span>ליבות מחשוב פעילות:</span> <span id="activeCores" class="value">0 מתוך 0</span></div>
             <div class="stat"><span>מניות (Shares) שנשלחו:</span> <span id="shares" class="value">0</span></div>
             <div class="stat"><span>מניות שהתקבלו (Accepted):</span> <span id="accepted" class="value" style="color: #4ade80;">0</span></div>
+            <div class="stat"><span>קושי שיא שהושג (Best Share):</span> <span id="bestDiff" class="value" style="color: #fbbf24;">0</span></div>
+            <div class="stat" id="bestHashRow" style="font-size: 0.8rem; border-bottom: none; display: none;">
+              <span style="color: #94a3b8;">ההאש הכי טוב:</span>
+              <span id="bestHash" style="font-family: monospace; color: #94a3b8; word-break: break-all; max-width: 70%; text-align: left;">N/A</span>
+            </div>
             
             <div class="health-grid">
               <div class="health-item">
@@ -570,6 +595,28 @@ if (isMainThread) {
                 document.getElementById('hashrate').innerText = data.hashrate_khs + ' KH/s';
                 document.getElementById('shares').innerText = data.shares_found;
                 document.getElementById('accepted').innerText = data.shares_accepted;
+                
+                // עדכון קושי שיא
+                const bestDiffEl = document.getElementById('bestDiff');
+                const bestDiffVal = data.best_difficulty || 0;
+                let formattedDiff = bestDiffVal;
+                if (bestDiffVal === 0) {
+                  formattedDiff = '0';
+                } else if (bestDiffVal < 0.0001) {
+                  formattedDiff = bestDiffVal.toExponential(4);
+                } else if (bestDiffVal < 1) {
+                  formattedDiff = bestDiffVal.toFixed(6);
+                } else {
+                  formattedDiff = bestDiffVal.toFixed(2);
+                }
+                bestDiffEl.innerText = formattedDiff;
+                
+                if (data.best_difficulty_hash) {
+                  document.getElementById('bestHashRow').style.display = 'flex';
+                  document.getElementById('bestHash').innerText = data.best_difficulty_hash;
+                } else {
+                  document.getElementById('bestHashRow').style.display = 'none';
+                }
                 
                 // עדכון ליבות פעילות
                 const coresEl = document.getElementById('activeCores');
@@ -705,6 +752,7 @@ if (isMainThread) {
       pendingSubmissions.delete(msg.id);
       if (msg.result === true) {
         sharesAccepted++;
+        saveStatsSync(); // שמירה מיידית של ה-Share שהתקבל בהצלחה
         console.log(`✅ Share התקבל בשרת! (סה"כ Accepted: ${sharesAccepted})`);
       } else if (msg.error) {
         console.log(`⚠️ Share נדחה על ידי השרת: ${JSON.stringify(msg.error)}`);
@@ -747,7 +795,8 @@ if (isMainThread) {
         job: currentJob, 
         difficulty, 
         extranonce1, 
-        extranonce2Size 
+        extranonce2Size,
+        globalBestDifficulty: bestDifficulty
       }));
       return;
     }
@@ -787,12 +836,22 @@ if (isMainThread) {
   let miningLoopRunning = false;
   let startTime = Date.now();
   let localHashes = 0;
+  let bestHashValue = null;
 
   parentPort.on('message', (msg) => {
     if (msg.type === 'difficulty') {
       difficulty = msg.difficulty;
       shareTarget = calcShareTarget(difficulty);
     } 
+    else if (msg.type === 'best_difficulty') {
+      if (msg.globalBestDifficulty && msg.globalBestDifficulty > 0) {
+        const maxTarget = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
+        const targetForGlobalBest = BigInt(Math.floor(Number(maxTarget) / msg.globalBestDifficulty));
+        if (bestHashValue === null || targetForGlobalBest < bestHashValue) {
+          bestHashValue = targetForGlobalBest;
+        }
+      }
+    }
     else if (msg.type === 'job') {
       currentJob = msg.job;
       difficulty = msg.difficulty;
@@ -805,6 +864,14 @@ if (isMainThread) {
       nbitsBuf = packUInt32LE(currentJob.nbits);
       ntimeBuf = packUInt32LE(currentJob.ntime);
       merkleBranch = currentJob.merkleBranch;
+      
+      if (msg.globalBestDifficulty && msg.globalBestDifficulty > 0) {
+        const maxTarget = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
+        const targetForGlobalBest = BigInt(Math.floor(Number(maxTarget) / msg.globalBestDifficulty));
+        if (bestHashValue === null || targetForGlobalBest < bestHashValue) {
+          bestHashValue = targetForGlobalBest;
+        }
+      }
       
       setupNewExtranonce2();
       
@@ -840,6 +907,17 @@ if (isMainThread) {
       headerBuf.writeUInt32LE(nonce, 76);
       const hash = doubleSha256(headerBuf);
       const hashValue = hashToBigInt(hash);
+      
+      if (bestHashValue === null || hashValue < bestHashValue) {
+        bestHashValue = hashValue;
+        const maxTarget = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
+        const diff = Number(maxTarget) / Number(hashValue);
+        parentPort.postMessage({
+          type: 'best_difficulty',
+          difficulty: diff,
+          hash: reverseBytes(hash).toString('hex')
+        });
+      }
       
       if (hashValue <= shareTarget) {
         const nonceHex = packUInt32LE(nonce).toString('hex');
