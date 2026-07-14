@@ -32,7 +32,15 @@ if [ $? -eq 0 ]; then
     # הרצת המיינר ברקע
     node stratum-miner.mjs > /dev/null 2>&1 &
     
+    # קריאת פורט ה-HTTP מ-.env או שימוש בברירת מחדל 3224
+    PORT=$(grep -E "^HTTP_PORT=" .env | cut -d= -f2 | tr -d '\r')
+    PORT=${PORT:-3224}
+    
+    # המתנה קלה כדי ששרת ה-Node יספיק לעלות
+    sleep 1.5
+    xdg-open "http://localhost:$PORT" &
+    
     # הודעת אישור
-    zenity --info --text="הכרייה הופעלה ברקע בהצלחה!\nמנוצלות: $CHOICE ליבות מתוך $CORES.\nלוח הבקרה זמין בכתובת http://localhost:3224" --title="הכרייה התחילה"
+    zenity --info --text="הכרייה הופעלה ברקע בהצלחה!\nמנוצלות: $CHOICE ליבות מתוך $CORES.\nלוח הבקרה זמין בכתובת http://localhost:$PORT" --title="הכרייה התחילה"
   fi
 fi
