@@ -1,0 +1,15 @@
+[Unit]
+Description=Node.js Stratum Bitcoin Miner
+After=network.target
+
+[Service]
+Type=simple
+User=avivderi
+WorkingDirectory=/home/avivderi/שולחן העבודה/my-Bitcoin
+ExecStart=/usr/bin/node "/home/avivderi/שולחן העבודה/my-Bitcoin/stratum-miner.mjs"
+Restart=always
+RestartSec=10
+EnvironmentFile=-/home/avivderi/שולחן העבודה/my-Bitcoin/.env
+
+[Install]
+WantedBy=multi-user.target
