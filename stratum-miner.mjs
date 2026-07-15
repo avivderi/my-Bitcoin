@@ -905,6 +905,23 @@ if (isMainThread) {
       return;
     }
 
+    if (req.url === '/phone-worker.py') {
+      try {
+        if (fs.existsSync('phone-worker.py')) {
+          const content = fs.readFileSync('phone-worker.py', 'utf8');
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end(content);
+        } else {
+          res.writeHead(404);
+          res.end('File not found');
+        }
+      } catch (err) {
+        res.writeHead(500);
+        res.end(err.message);
+      }
+      return;
+    }
+
     if (req.url === '/stop') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, message: 'Miner stopping...' }));

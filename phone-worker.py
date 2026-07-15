@@ -39,6 +39,15 @@ if len(positional_args) >= 1:
 if len(positional_args) >= 2:
     MASTER_IP = positional_args[1]
 
+# Extract port from MASTER_IP if specified (e.g. 192.168.1.50:3224)
+if ":" in MASTER_IP:
+    try:
+        parts = MASTER_IP.split(":")
+        MASTER_IP = parts[0]
+        MASTER_PORT = int(parts[1])
+    except Exception:
+        pass
+
 # State variables
 current_threads = DEFAULT_THREADS
 is_mining = False
