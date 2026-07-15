@@ -378,8 +378,21 @@ if (isMainThread) {
 
   // הדפסת קצב גיבוב כולל למסך כל שתי שניות (בטרמינל)
   setInterval(() => {
-    const totalKHs = workers.reduce((sum, w) => sum + (w.hashrateKHs || 0), 0);
-    process.stdout.write(`\r⛏️  קצב כרייה כולל (${workers.length} ליבות): ${totalKHs.toFixed(1)} KH/s `);
+    let combinedKHs = workers.reduce((sum, w) => sum + (w.hashrateKHs || 0), 0);
+    let combinedActiveCores = workers.length;
+
+    for (const worker of remoteWorkers.values()) {
+      const isDemoWorker = worker.name.includes('-demo');
+      if (isDemoWorker === demoModeActive) {
+        const isOnline = (Date.now() - worker.last_seen) < 15000;
+        if (isOnline && worker.is_mining) {
+          combinedKHs += worker.hashrate || 0;
+          combinedActiveCores += worker.threads || 0;
+        }
+      }
+    }
+
+    process.stdout.write(`\r⛏️  קצב כרייה כולל (${combinedActiveCores} ליבות): ${combinedKHs.toFixed(1)} KH/s `);
   }, 2000);
 
   // כתיבת סטטיסטיקות לקובץ כל 10 דקות
