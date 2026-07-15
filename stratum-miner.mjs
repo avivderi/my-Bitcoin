@@ -184,6 +184,7 @@ if (isMainThread) {
   const WORKER_NAME = process.env.WORKER_NAME || 'nodejs-worker';
   const HTTP_PORT = process.env.HTTP_PORT || 3224;
   const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
+  const ACK_TIMEOUT_MS = 15000; // 15 seconds acknowledgment timeout
 
   let extranonce1 = null;
   let extranonce2Size = 4;
@@ -224,6 +225,22 @@ if (isMainThread) {
     }
   }
 
+  // שמירת שיתופים תלויים ושאינם מאושרים לדיסק להגנה מפני קריסת המערכת
+  function savePendingSharesSync() {
+    const list = [...shareQueue];
+    for (const [id, submission] of pendingSubmissions.entries()) {
+      list.push({ method: submission.method, params: submission.params });
+    }
+    
+    try {
+      const tempPath = 'pending-shares.json.tmp';
+      fs.writeFileSync(tempPath, JSON.stringify(list, null, 2));
+      fs.renameSync(tempPath, 'pending-shares.json');
+    } catch (err) {
+      originalError('שגיאה בשמירת שיתופים תלויים לדיסק:', err.message);
+    }
+  }
+
   // טעינת סטטיסטיקות קודמות מקובץ stats.json על מנת שהנתונים יישמרו בין הפעלות
   try {
     if (fs.existsSync('stats.json')) {
@@ -247,7 +264,7 @@ if (isMainThread) {
   console.log(`💻 נמצאו ${os.cpus().length} ליבות (מתוכן יופעלו ${configuredCores}). מערכת Multi-threading מאותחלת...`);
 
   const workers = [];
-  const pendingSubmissions = new Set();
+  const pendingSubmissions = new Map();
 
   let activeCoresTarget = 1;
 
@@ -824,7 +841,8 @@ if (isMainThread) {
         wallet_address: BTC_ADDRESS,
         phones_mining_enabled: phonesMiningEnabled,
         demo_mode_active: demoModeActive,
-        remote_workers: Array.from(remoteWorkers.values())
+        remote_workers: Array.from(remoteWorkers.values()),
+        pending_shares_count: shareQueue.length + pendingSubmissions.size
       };
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(stats));
@@ -1050,6 +1068,7 @@ if (isMainThread) {
     .stat-value.primary { color: var(--primary); text-shadow: 0 0 10px var(--primary-glow); }
     .stat-value.success { color: var(--success); }
     .stat-value.accent { color: var(--accent); }
+    .stat-value.warning { color: var(--warning); }
     
     /* Health Panel */
     .health-container {
@@ -1307,6 +1326,10 @@ if (isMainThread) {
               <div class="stat-label">פתרונות (Shares)</div>
               <div id="shares" class="stat-value success">0</div>
             </div>
+            <div class="stat-box">
+              <div class="stat-label">שיתופים ממתינים לאישור</div>
+              <div id="pendingShares" class="stat-value warning">0</div>
+            </div>
           </div>
         </div>
         
@@ -1522,6 +1545,7 @@ if (isMainThread) {
         }
         
         document.getElementById('shares').innerText = data.shares_found + ' (' + data.shares_accepted + ' Accepted)';
+        document.getElementById('pendingShares').innerText = data.pending_shares_count || 0;
         
         // Update PC Cores
         const activeCoresEl = document.getElementById('activeCores');
@@ -1666,8 +1690,24 @@ if (isMainThread) {
   let reconnectWait = 1000;
   let isReconnecting = false;
 
+  function flushPendingSubmissions() {
+    if (pendingSubmissions.size > 0) {
+      console.log(`🔌 [Recovery] מחזיר ${pendingSubmissions.size} שיתופים תלויים (Pending) לתור לשליחה מחדש.`);
+      for (const [id, submission] of pendingSubmissions.entries()) {
+        shareQueue.push({ method: submission.method, params: submission.params });
+      }
+      pendingSubmissions.clear();
+      if (typeof savePendingSharesSync === 'function') {
+        savePendingSharesSync();
+      }
+    }
+  }
+
   function connectToPool() {
-    if (socket) socket.destroy();
+    if (socket) {
+      flushPendingSubmissions();
+      socket.destroy();
+    }
     
     socket = new net.Socket();
     
@@ -1684,6 +1724,7 @@ if (isMainThread) {
 
     socket.on('close', () => {
       console.log('🔌 החיבור נסגר');
+      flushPendingSubmissions();
       scheduleReconnect();
     });
 
@@ -1715,23 +1756,46 @@ if (isMainThread) {
   }
 
   function send(method, params) {
+    const currentMsgId = msgId++;
     if (method === 'mining.submit') {
       if (!socket || socket.destroyed || !socket.writable) {
         console.warn(`⚠️ החיבור לשרת מנותק! שומר את ה-Share זמנית בתור לשליחה מחדש...`);
         shareQueue.push({ method, params });
+        if (typeof savePendingSharesSync === 'function') {
+          savePendingSharesSync();
+        }
         return;
       }
-      pendingSubmissions.add(msgId);
+      pendingSubmissions.set(currentMsgId, { method, params, timestamp: Date.now() });
+      if (typeof savePendingSharesSync === 'function') {
+        savePendingSharesSync();
+      }
     }
     if (!socket || socket.destroyed) return;
-    const msg = { id: msgId++, method, params };
-    socket.write(JSON.stringify(msg) + '\n');
+    const msg = { id: currentMsgId, method, params };
+    try {
+      socket.write(JSON.stringify(msg) + '\n');
+    } catch (err) {
+      console.error(`❌ שגיאה בכתיבה ל-Socket: ${err.message}`);
+      if (method === 'mining.submit') {
+        pendingSubmissions.delete(currentMsgId);
+        console.warn(`📥 שומר את ה-Share שנכשל בכתיבה זמנית בתור לשליחה מחדש...`);
+        shareQueue.push({ method, params });
+        if (typeof savePendingSharesSync === 'function') {
+          savePendingSharesSync();
+        }
+      }
+    }
   }
 
   function handleMessage(msg) {
     // בדיקה אם מדובר בתגובה לשליחת Share
-    if (msg.id && pendingSubmissions.has(Number(msg.id))) {
-      pendingSubmissions.delete(Number(msg.id));
+    const parsedId = Number(msg.id);
+    if (msg.id && pendingSubmissions.has(parsedId)) {
+      pendingSubmissions.delete(parsedId);
+      if (typeof savePendingSharesSync === 'function') {
+        savePendingSharesSync();
+      }
       console.log(`📡 תגובה מקבלת Share מהבריכה (מזהה ${msg.id}): תוצאה=${JSON.stringify(msg.result)}, שגיאה=${JSON.stringify(msg.error)}`);
       if (msg.result === true || (msg.result && !msg.error)) {
         sharesAccepted++;
@@ -1807,6 +1871,20 @@ if (isMainThread) {
     }
   }
 
+  // טעינת שיתופים תלויים שלא אושרו מהפעלות קודמות
+  try {
+    if (fs.existsSync('pending-shares.json')) {
+      const data = fs.readFileSync('pending-shares.json', 'utf8');
+      const list = JSON.parse(data);
+      if (Array.isArray(list) && list.length > 0) {
+        shareQueue.push(...list);
+        console.log(`📂 [Recovery] שוחזרו ${list.length} שיתופים (Shares) תלויים מהפעלה קודמת שנשמרו ב-pending-shares.json.`);
+      }
+    }
+  } catch (e) {
+    console.error('שגיאה בטעינת pending-shares.json:', e.message);
+  }
+
   connectToPool();
 
   function handleExit() {
@@ -1832,6 +1910,31 @@ if (isMainThread) {
   process.on('SIGINT', handleExit);
   process.on('SIGTERM', handleExit);
 
+  // סורק תקופתי לזיהוי שיתופים (Shares) שפג תוקפם ללא אישור מהשרת
+  setInterval(() => {
+    const now = Date.now();
+    const timedOut = [];
+    
+    for (const [id, submission] of pendingSubmissions.entries()) {
+      if (now - submission.timestamp > ACK_TIMEOUT_MS) {
+        timedOut.push({ id, submission });
+      }
+    }
+    
+    for (const { id, submission } of timedOut) {
+      console.warn(`⚠️ [Timeout] השליחה מזהה ${id} פגה לאחר ${ACK_TIMEOUT_MS / 1000} שניות ללא תגובה מהבריכה.`);
+      pendingSubmissions.delete(id);
+      
+      const { method, params } = submission;
+      if (socket && !socket.destroyed && socket.writable) {
+        console.log(`🔄 [Retry] ה-Socket כתיב, שולח מחדש את השיתוף מיד...`);
+        send(method, params);
+      } else {
+        console.warn(`📥 [Queue] ה-Socket לא כתיב, שומר את השיתוף בתור לשליחה מחדש לאחר חיבור מחדש.`);
+        shareQueue.push({ method, params });
+      }
+    }
+  }, 5000);
 
 } else {
   // ==========================================
