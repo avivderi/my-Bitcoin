@@ -187,7 +187,7 @@ if (isMainThread) {
   const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
   const ACK_TIMEOUT_MS = 15000; // 15 seconds acknowledgment timeout
   const COOL_DOWN_TEMP = parseFloat(process.env.COOL_DOWN_TEMP || '75');
-  const RESUME_RAMP_TEMP = parseFloat(process.env.RESUME_RAMP_TEMP || '68');
+  const RESUME_RAMP_TEMP = parseFloat(process.env.RESUME_RAMP_TEMP || '72');
 
   let extranonce1 = null;
   let extranonce2Size = 4;
@@ -313,11 +313,12 @@ if (isMainThread) {
             if (msg.difficulty > bestDifficulty) {
               bestDifficulty = msg.difficulty;
               bestDifficultyHash = msg.hash;
-              saveStatsSync();
               console.log(`🚀 קושי שיא חדש שנמצא על ידי המעבד: ${bestDifficulty.toFixed(4)} (האש: ${bestDifficultyHash})`);
               
-              // התראת שולחן עבודה על שיא קושי חדש
-              exec(`notify-send -u normal "🏆 שיא כרייה חדש!" "נמצא האש בקושי שובר שיא של ${bestDifficulty.toFixed(4)}!"`);
+              // התראת שולחן עבודה על שיא קושי חדש (רק אם הקושי משמעותי)
+              if (bestDifficulty > 1.0) {
+                exec(`notify-send -u normal "🏆 שיא כרייה חדש!" "נמצא האש בקושי שובר שיא של ${bestDifficulty.toFixed(4)}!"`);
+              }
 
               workers.forEach(w => w.postMessage({ type: 'best_difficulty', globalBestDifficulty: bestDifficulty }));
             }
@@ -2045,6 +2046,8 @@ if (isMainThread) {
   let startTime = Date.now();
   let localHashes = 0;
   let bestHashValue = null;
+  let hasNewBestLocal = false;
+  let bestHashHex = '';
 
   parentPort.on('message', (msg) => {
     if (msg.type === 'difficulty') {
@@ -2119,13 +2122,8 @@ if (isMainThread) {
       
       if (bestHashValue === null || hashValue < bestHashValue) {
         bestHashValue = hashValue;
-        const maxTarget = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
-        const diff = Number(maxTarget) / Number(hashValue);
-        parentPort.postMessage({
-          type: 'best_difficulty',
-          difficulty: diff,
-          hash: reverseBytes(hash).toString('hex')
-        });
+        bestHashHex = reverseBytes(hash).toString('hex');
+        hasNewBestLocal = true;
       }
       
       if (hashValue <= shareTarget) {
@@ -2149,6 +2147,18 @@ if (isMainThread) {
         hashrateKHs: (localHashes / elapsedSec / 1000),
         newHashes: localHashes
       });
+      
+      if (hasNewBestLocal) {
+        const maxTarget = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
+        const diff = Number(maxTarget) / Number(bestHashValue);
+        parentPort.postMessage({
+          type: 'best_difficulty',
+          difficulty: diff,
+          hash: bestHashHex
+        });
+        hasNewBestLocal = false;
+      }
+      
       startTime = Date.now();
       localHashes = 0;
     }
