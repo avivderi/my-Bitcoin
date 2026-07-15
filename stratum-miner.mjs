@@ -76,6 +76,10 @@ if (isMainThread) {
 
   // מערך לשמירת הלוגים האחרונים (עבור דף האינטרנט)
   const logs = [];
+  const demoLogs = [];
+  let phonesMiningEnabled = true;
+  let demoModeActive = false;
+  const remoteWorkers = new Map();
   const originalLog = console.log;
   const originalError = console.error;
 
@@ -104,20 +108,36 @@ if (isMainThread) {
     const msg = args.join(' ');
     const timestamp = getLocalTimestamp();
     const logLine = `[${timestamp}] ${msg}`;
-    logs.push(`[${timestamp.split(' ')[1]}] ${msg}`);
-    if (logs.length > 50) logs.shift();
-    originalLog.apply(console, args);
-    appendToLogFile(logLine);
+    const isDemoLog = msg.includes('🎬') || msg.includes('Demo') || msg.includes('demo') || (typeof demoModeActive !== 'undefined' && demoModeActive);
+    
+    if (isDemoLog) {
+      demoLogs.push(`[${timestamp.split(' ')[1]}] ${msg}`);
+      if (demoLogs.length > 50) demoLogs.shift();
+      originalLog.apply(console, args);
+    } else {
+      logs.push(`[${timestamp.split(' ')[1]}] ${msg}`);
+      if (logs.length > 50) logs.shift();
+      originalLog.apply(console, args);
+      appendToLogFile(logLine);
+    }
   };
 
   console.error = (...args) => {
     const msg = args.join(' ');
     const timestamp = getLocalTimestamp();
     const logLine = `[${timestamp}] ❌ ${msg}`;
-    logs.push(`[${timestamp.split(' ')[1]}] ❌ ${msg}`);
-    if (logs.length > 50) logs.shift();
-    originalError.apply(console, args);
-    appendToLogFile(logLine);
+    const isDemoLog = msg.includes('🎬') || msg.includes('Demo') || msg.includes('demo') || (typeof demoModeActive !== 'undefined' && demoModeActive);
+    
+    if (isDemoLog) {
+      demoLogs.push(`[${timestamp.split(' ')[1]}] ❌ ${msg}`);
+      if (demoLogs.length > 50) demoLogs.shift();
+      originalError.apply(console, args);
+    } else {
+      logs.push(`[${timestamp.split(' ')[1]}] ❌ ${msg}`);
+      if (logs.length > 50) logs.shift();
+      originalError.apply(console, args);
+      appendToLogFile(logLine);
+    }
   };
 
   function loadEnv() {
@@ -153,6 +173,8 @@ if (isMainThread) {
   const shareQueue = [];
   let sharesFound = 0;
   let sharesAccepted = 0;
+  let demoSharesFound = 0;
+  let demoSharesAccepted = 0;
   let totalHashesGlobal = 0;
   let bestDifficulty = 0;
   let bestDifficultyHash = '';
@@ -218,20 +240,26 @@ if (isMainThread) {
         worker.hashrateKHs = 0;
         worker.on('message', (msg) => {
           if (msg.type === 'share') {
-            sharesFound++;
-            saveStatsSync(); // שמירה מיידית של מציאת ה-Share
-            console.log(`🎉 [Worker] Share נמצא! שולח ל-Pool...`);
-            
-            // התראת שולחן עבודה על מציאת Share
-            exec(`notify-send -u normal "⛏️ נמצאה מנייה!" "שולח מניית כרייה לבריכת הכרייה..."`);
+            if (typeof demoModeActive !== 'undefined' && demoModeActive) {
+              console.log(`🎬 [Demo PC Worker] found a simulated share!`);
+              demoSharesFound++;
+              demoSharesAccepted++;
+            } else {
+              sharesFound++;
+              saveStatsSync(); // שמירה מיידית של מציאת ה-Share
+              console.log(`🎉 [Worker] Share נמצא! שולח ל-Pool...`);
+              
+              // התראת שולחן עבודה על מציאת Share
+              exec(`notify-send -u normal "⛏️ נמצאה מנייה!" "שולח מניית כרייה לבריכת הכרייה..."`);
 
-            send('mining.submit', [
-              `${BTC_ADDRESS}.${WORKER_NAME}`,
-              msg.jobId,
-              msg.extranonce2,
-              msg.ntime,
-              msg.nonce
-            ]);
+              send('mining.submit', [
+                `${BTC_ADDRESS}.${WORKER_NAME}`,
+                msg.jobId,
+                msg.extranonce2,
+                msg.ntime,
+                msg.nonce
+              ]);
+            }
           } else if (msg.type === 'hashrate') {
             worker.hashrateKHs = msg.hashrateKHs;
             totalHashesGlobal += msg.newHashes;
@@ -429,22 +457,283 @@ if (isMainThread) {
   setInterval(checkSystemHealth, 5000);
   checkSystemHealth(); // initial check
 
+  // ===== ניהול עובדים מבוזרים (טלפונים) ומצב דמו =====
+
+  // Cleanup offline remote workers (no heartbeat in 15 seconds)
+  setInterval(() => {
+    const now = Date.now();
+    for (const [name, worker] of remoteWorkers.entries()) {
+      if (now - worker.last_seen > 15000) {
+        console.log(`🔌 Remote worker [${name}] went offline (timeout).`);
+        remoteWorkers.delete(name);
+      }
+    }
+  }, 5000);
+
   // ===== שרת Web (לוח בקרה אינטרנטי) =====
   const server = http.createServer((req, res) => {
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
+      req.on('end', () => {
+        try {
+          let payload = {};
+          if (body.trim()) {
+            payload = JSON.parse(body);
+          }
+          
+          if (req.url === '/api/worker/heartbeat') {
+            const now = Date.now();
+            const name = payload.name || 'unknown-worker';
+            
+            // Get or create worker status
+            let worker = remoteWorkers.get(name);
+            if (!worker) {
+              worker = {
+                name,
+                temp: payload.temp,
+                hashrate: payload.hashrate,
+                threads: payload.threads || 4,
+                max_cores: payload.max_cores || 8,
+                shares_accepted: payload.shares_accepted || 0,
+                shares_rejected: payload.shares_rejected || 0,
+                uptime: payload.uptime || 0,
+                is_mining: payload.is_mining || false,
+                last_seen: now,
+                last_adjust: 0
+              };
+              remoteWorkers.set(name, worker);
+            } else {
+              // Update stats
+              worker.temp = payload.temp;
+              worker.hashrate = payload.hashrate;
+              worker.max_cores = payload.max_cores || 8;
+              worker.shares_accepted = payload.shares_accepted || 0;
+              worker.shares_rejected = payload.shares_rejected || 0;
+              worker.uptime = payload.uptime || 0;
+              worker.is_mining = payload.is_mining || false;
+              worker.last_seen = now;
+            }
+
+            // Dynamic thermal-aware thread scaling
+            let targetThreads = worker.threads;
+            if (phonesMiningEnabled) {
+              if (worker.temp >= 65) {
+                if (now - worker.last_adjust > 15000) { // 15s cooldown
+                  if (targetThreads > 1) {
+                    targetThreads--;
+                    worker.last_adjust = now;
+                    console.log(`⚠️ [Worker ${name}] Thermal limit exceeded (${worker.temp.toFixed(1)}°C). Scaling threads down to ${targetThreads}/${worker.max_cores}`);
+                  }
+                }
+              } else if (worker.temp <= 55) {
+                if (now - worker.last_adjust > 15000) {
+                  if (targetThreads < worker.max_cores) {
+                    targetThreads++;
+                    worker.last_adjust = now;
+                    console.log(`📈 [Worker ${name}] Thermal safety cleared (${worker.temp.toFixed(1)}°C). Scaling threads up to ${targetThreads}/${worker.max_cores}`);
+                  }
+                }
+              }
+            }
+            worker.threads = targetThreads;
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              status: 'ok',
+              target_threads: targetThreads,
+              is_mining_target: phonesMiningEnabled,
+              job: currentJob,
+              difficulty: difficulty,
+              extranonce1: extranonce1,
+              extranonce2Size: extranonce2Size,
+              job_changed: currentJob ? true : false
+            }));
+            return;
+          }
+
+          if (req.url === '/api/worker/submit') {
+            const name = payload.worker_name || 'unknown-worker';
+            const isDemoShare = name.includes('-demo') || demoModeActive;
+            
+            if (isDemoShare) {
+              console.log(`🎬 [Demo Worker ${name}] submitted a simulated share!`);
+              demoSharesFound++;
+              demoSharesAccepted++;
+            } else {
+              console.log(`🎉 Remote worker [${name}] submitted a share! Submitting to pool...`);
+              
+              // Submit to the Stratum pool using main connection
+              send('mining.submit', [
+                `${BTC_ADDRESS}.${name}`,
+                payload.job_id,
+                payload.extranonce2,
+                payload.ntime,
+                payload.nonce
+              ]);
+
+              sharesFound++;
+              saveStatsSync();
+            }
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok' }));
+            return;
+          }
+
+          if (req.url === '/api/workers/toggle') {
+            phonesMiningEnabled = !phonesMiningEnabled;
+            console.log(`⚡ Toggled phone mining status to: ${phonesMiningEnabled ? 'ON' : 'OFF'}`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok', phones_mining_enabled: phonesMiningEnabled }));
+            return;
+          }
+
+          if (req.url === '/api/demo/toggle') {
+            demoModeActive = !demoModeActive;
+            if (!demoModeActive) {
+              // Cleanup demo workers from the remoteWorkers map
+              for (const key of remoteWorkers.keys()) {
+                if (key.includes('-demo')) {
+                  remoteWorkers.delete(key);
+                }
+              }
+              // Reset demo stats when leaving demo mode
+              demoSharesFound = 0;
+              demoSharesAccepted = 0;
+              demoLogs.length = 0;
+            } else {
+              // Initialize demo stats from current real stats
+              demoSharesFound = sharesFound;
+              demoSharesAccepted = sharesAccepted;
+            }
+            console.log(`⚡ Toggled server demo mode status to: ${demoModeActive ? 'ON' : 'OFF'}`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok', demo_active: demoModeActive }));
+            return;
+          }
+
+          res.writeHead(400);
+          res.end('Bad Request');
+        } catch (e) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+
     if (req.url === '/stats') {
       const uptimeSec = Math.floor((Date.now() - appStartTime) / 1000);
-      const totalKHs = workers.reduce((sum, w) => sum + (w.hashrateKHs || 0), 0);
+      let totalKHs = workers.reduce((sum, w) => sum + (w.hashrateKHs || 0), 0);
+      let localSharesFound = demoModeActive ? demoSharesFound : sharesFound;
+      let localSharesAccepted = demoModeActive ? demoSharesAccepted : sharesAccepted;
+      let localActiveCores = systemHealth.activeCores;
+
+      if (demoModeActive) {
+        // Simulating PC mining stats in demo mode
+        totalKHs = 145.8 + Math.sin(Date.now() / 10000) * 15; // Simulated 130-160 KH/s
+        if (Math.random() < 0.05) {
+          demoSharesFound++;
+          demoSharesAccepted++;
+        }
+        localSharesFound = demoSharesFound;
+        localSharesAccepted = demoSharesAccepted;
+        localActiveCores = configuredCores;
+
+        // Add simulated phone workers if none are present
+        const now = Date.now();
+        if (!remoteWorkers.has('redmi-demo-1')) {
+          remoteWorkers.set('redmi-demo-1', {
+            name: 'redmi-demo-1',
+            temp: 58.2,
+            hashrate: 12.4,
+            threads: 4,
+            max_cores: 8,
+            shares_accepted: 3,
+            shares_rejected: 0,
+            uptime: 120,
+            is_mining: true,
+            last_seen: now
+          });
+        }
+        if (!remoteWorkers.has('redmi-demo-2')) {
+          remoteWorkers.set('redmi-demo-2', {
+            name: 'redmi-demo-2',
+            temp: 64.5,
+            hashrate: 18.1,
+            threads: 6,
+            max_cores: 8,
+            shares_accepted: 5,
+            shares_rejected: 0,
+            uptime: 180,
+            is_mining: true,
+            last_seen: now
+          });
+        }
+
+        // Simulate thermodynamics and thread adjustments for demo workers
+        for (const [key, worker] of remoteWorkers.entries()) {
+          if (key.includes('-demo')) {
+            worker.last_seen = now;
+            worker.uptime += 2;
+            if (phonesMiningEnabled) {
+              worker.is_mining = true;
+              if (worker.temp >= 65) {
+                if (!worker.last_adjust || now - worker.last_adjust > 15000) {
+                  if (worker.threads > 1) {
+                    worker.threads--;
+                    worker.last_adjust = now;
+                    console.log(`🎬 [Demo Worker ${worker.name}] Thermals too hot (${worker.temp.toFixed(1)}°C). Scaling threads down to ${worker.threads}/${worker.max_cores}`);
+                  }
+                }
+              } else if (worker.temp <= 55) {
+                if (!worker.last_adjust || now - worker.last_adjust > 15000) {
+                  if (worker.threads < worker.max_cores) {
+                    worker.threads++;
+                    worker.last_adjust = now;
+                    console.log(`🎬 [Demo Worker ${worker.name}] Thermals cooled down (${worker.temp.toFixed(1)}°C). Scaling threads up to ${worker.threads}/${worker.max_cores}`);
+                  }
+                }
+              }
+              const heatFactor = (worker.threads / worker.max_cores) * 2.0;
+              worker.temp += (heatFactor - 1.2) * 1.5 + (Math.random() - 0.5);
+              worker.temp = Math.max(35.0, Math.min(80.0, worker.temp));
+              worker.hashrate = worker.threads * 4.2 + (Math.random() - 0.5);
+              if (Math.random() < 0.02) {
+                worker.shares_accepted++;
+                demoSharesFound++;
+                demoSharesAccepted++;
+              }
+            } else {
+              worker.is_mining = false;
+              worker.hashrate = 0.0;
+              worker.temp = Math.max(35.0, worker.temp - 1.5);
+            }
+          }
+        }
+      }
+
       const stats = {
         uptime_seconds: uptimeSec,
-        shares_found: sharesFound,
-        shares_accepted: sharesAccepted,
+        shares_found: localSharesFound,
+        shares_accepted: localSharesAccepted,
         hashrate_khs: parseFloat(totalKHs.toFixed(1)),
         total_hashes: totalHashesGlobal,
         difficulty: difficulty,
-        logs: logs, // שליחת הלוגים האחרונים
-        health: systemHealth,
+        logs: demoModeActive ? logs.concat(demoLogs) : logs,
+        health: {
+          ...systemHealth,
+          activeCores: localActiveCores
+        },
         best_difficulty: bestDifficulty,
-        best_difficulty_hash: bestDifficultyHash
+        best_difficulty_hash: bestDifficultyHash,
+        wallet_address: BTC_ADDRESS,
+        phones_mining_enabled: phonesMiningEnabled,
+        demo_mode_active: demoModeActive,
+        remote_workers: Array.from(remoteWorkers.values())
       };
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify(stats));
@@ -463,270 +752,745 @@ if (isMainThread) {
 
     if (req.url === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(`
-        <!DOCTYPE html>
-        <html dir="rtl" lang="he">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>לוח בקרה - כורה ביטקוין</title>
-          <style>
-            body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0f19; color: #f8fafc; text-align: center; padding: 2rem; margin: 0; min-height: 100vh; display: flex; flex-direction: column; justify-content: center; }
-            .card { background: rgba(30, 41, 59, 0.6); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; padding: 2.5rem; max-width: 650px; margin: 0 auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-            h1 { color: #f59e0b; margin-top: 0; font-size: 2rem; text-shadow: 0 0 15px rgba(245, 158, 11, 0.2); }
-            .stat { margin: 1.2rem 0; font-size: 1.2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255, 255, 255, 0.05); padding-bottom: 0.5rem; }
-            .value { font-weight: bold; color: #38bdf8; font-size: 1.5rem; }
-            .money { color: #10b981; font-size: 2.5rem; font-weight: bold; margin-top: 0.5rem; text-shadow: 0 0 10px rgba(16, 185, 129, 0.3); }
-            .pulse { animation: pulse 2s infinite; }
-            @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
-            
-            /* עיצוב התראת בריאות */
-            .alert-box {
-              background: rgba(239, 68, 68, 0.15);
-              border: 1px solid rgba(239, 68, 68, 0.35);
-              color: #fca5a5;
-              border-radius: 8px;
-              padding: 1rem;
-              margin-bottom: 1.5rem;
-              text-align: right;
-              display: none;
-              align-items: center;
-              gap: 10px;
-              animation: slideIn 0.3s ease-out;
-            }
-            .alert-box.warning {
-              background: rgba(245, 158, 11, 0.15);
-              border: 1px solid rgba(245, 158, 11, 0.35);
-              color: #fde047;
-            }
-            @keyframes slideIn {
-              from { transform: translateY(-10px); opacity: 0; }
-              to { transform: translateY(0); opacity: 1; }
-            }
-            .alert-title { font-weight: bold; margin-bottom: 0.25rem; font-size: 1.1rem; }
-            .alert-desc { font-size: 0.95rem; line-height: 1.4; }
-            
-            /* כפתור עצירה */
-            .stop-btn {
-              background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-              color: white;
-              border: none;
-              padding: 0.75rem 1.5rem;
-              font-size: 1.1rem;
-              font-weight: bold;
-              border-radius: 8px;
-              cursor: pointer;
-              transition: all 0.2s ease;
-              box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);
-              margin-top: 1rem;
-              width: 100%;
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              gap: 8px;
-            }
-            .stop-btn:hover {
-              transform: translateY(-2px);
-              box-shadow: 0 6px 20px rgba(239, 68, 68, 0.5);
-              background: linear-gradient(135deg, #f87171 0%, #ef4444 100%);
-            }
-            .stop-btn:active {
-              transform: translateY(0);
-            }
-            
-            /* עיצוב טרמינל הלוגים */
-            #terminal { 
-              background: #020617; 
-              border: 1px solid #334155; 
-              border-radius: 8px; 
-              padding: 1rem; 
-              text-align: left; 
-              font-family: monospace; 
-              font-size: 0.85rem; 
-              color: #34d399; 
-              max-height: 180px; 
-              overflow-y: auto; 
-              white-space: pre-wrap; 
-              direction: ltr; 
-              margin-top: 0.5rem;
-              box-shadow: inset 0 2px 8px rgba(0,0,0,0.8);
-            }
-            .health-grid {
-              display: grid;
-              grid-template-columns: 1fr 1fr;
-              gap: 15px;
-              margin: 1.5rem 0;
-            }
-            .health-item {
-              background: rgba(255,255,255,0.03);
-              border: 1px solid rgba(255,255,255,0.05);
-              border-radius: 8px;
-              padding: 0.75rem;
-            }
-            .health-label { font-size: 0.9rem; color: #94a3b8; }
-            .health-value { font-size: 1.25rem; font-weight: bold; margin-top: 0.25rem; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <h1>⛏️ סטטוס כרייה (Solo)</h1>
-            
-            <div id="alertBox" class="alert-box">
-              <div style="font-size: 2rem;">⚠️</div>
-              <div>
-                <div class="alert-title" id="alertTitle">התרעת מערכת</div>
-                <div class="alert-desc" id="alertDesc">טמפרטורת המעבד גבוהה מדי! מומלץ לכבות את הכרייה.</div>
-              </div>
+      res.end(`<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>לוח בקרה מבוזר - כריית ביטקוין סולו</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Rubik:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #070a13;
+      --card-bg: rgba(17, 24, 39, 0.7);
+      --card-border: rgba(255, 255, 255, 0.06);
+      --primary: #f59e0b;
+      --primary-glow: rgba(245, 158, 11, 0.35);
+      --accent: #38bdf8;
+      --success: #10b981;
+      --error: #ef4444;
+      --warning: #f59e0b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: 'Rubik', 'Outfit', sans-serif;
+      background: radial-gradient(circle at top, #111827 0%, #030712 100%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 1.5rem;
+      overflow-x: hidden;
+    }
+    
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      width: 100%;
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    
+    /* Demo Banner */
+    .demo-banner {
+      background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%);
+      color: #070a13;
+      font-weight: 800;
+      padding: 0.8rem;
+      border-radius: 12px;
+      text-align: center;
+      box-shadow: 0 0 20px rgba(245, 158, 11, 0.4);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 1.1rem;
+      animation: pulseBanner 2s infinite;
+    }
+    
+    @keyframes pulseBanner {
+      0% { opacity: 0.95; }
+      50% { opacity: 1; }
+      100% { opacity: 0.95; }
+    }
+    
+    /* Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 1rem;
+    }
+    
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    
+    .logo-icon {
+      font-size: 2.2rem;
+      filter: drop-shadow(0 0 8px var(--primary-glow));
+    }
+    
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: var(--success);
+      padding: 0.4rem 0.8rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+    
+    .status-badge.demo {
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      color: var(--primary);
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      background-color: currentColor;
+      border-radius: 50%;
+      box-shadow: 0 0 8px currentColor;
+    }
+    
+    /* Grid Layout */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 1.5rem;
+    }
+    
+    @media (max-width: 1024px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    
+    .main-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    
+    .side-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    
+    .card:hover {
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    }
+    
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 1.2rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    /* Stats Grid */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+    }
+    
+    .stat-box {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 12px;
+      padding: 1.2rem;
+      text-align: right;
+    }
+    
+    .stat-label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+    
+    .stat-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    
+    .stat-value.primary { color: var(--primary); text-shadow: 0 0 10px var(--primary-glow); }
+    .stat-value.success { color: var(--success); }
+    .stat-value.accent { color: var(--accent); }
+    
+    /* Health Panel */
+    .health-container {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    
+    .health-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.6rem 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+    
+    .health-row:last-child { border-bottom: none; }
+    
+    .health-val {
+      font-weight: 600;
+    }
+    
+    /* Alert Banner */
+    .alert-banner {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+      padding: 1rem;
+      border-radius: 12px;
+      display: none;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    
+    /* Phone Workers Section */
+    .workers-section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    
+    .workers-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+    
+    .worker-card {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 14px;
+      padding: 1.2rem;
+      position: relative;
+      overflow: hidden;
+      transition: all 0.2s ease;
+    }
+    
+    .worker-card::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      width: 4px;
+      background: var(--accent);
+    }
+    
+    .worker-card.warning::before { background: var(--warning); }
+    .worker-card.critical::before { background: var(--error); }
+    .worker-card.offline::before { background: var(--text-muted); }
+    
+    .worker-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.8rem;
+    }
+    
+    .worker-name {
+      font-weight: 600;
+      font-size: 1.1rem;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    .worker-badge {
+      font-size: 0.75rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 10px;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      color: var(--accent);
+    }
+    
+    .worker-stat-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 0.4rem;
+      font-size: 0.9rem;
+    }
+    
+    .worker-stat-label { color: var(--text-muted); }
+    
+    .worker-stat-val { font-weight: 500; }
+    
+    .temp-bar-container {
+      background: rgba(255, 255, 255, 0.05);
+      height: 6px;
+      border-radius: 3px;
+      margin-top: 0.8rem;
+      overflow: hidden;
+    }
+    
+    .temp-bar {
+      height: 100%;
+      width: 50%;
+      background: var(--success);
+      border-radius: 3px;
+      transition: width 0.5s ease, background-color 0.5s ease;
+    }
+    
+    .no-workers {
+      grid-column: 1 / -1;
+      text-align: center;
+      color: var(--text-muted);
+      padding: 2rem;
+      border: 1px dashed rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      font-size: 0.95rem;
+    }
+    
+    /* Control Buttons */
+    .controls-panel {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    
+    .btn {
+      padding: 0.8rem 1.2rem;
+      font-family: inherit;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border-radius: 10px;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    
+    .btn-primary {
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      color: #070a13;
+      box-shadow: 0 4px 14px rgba(245, 158, 11, 0.3);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(245, 158, 11, 0.4);
+    }
+    
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+    
+    .btn-danger {
+      background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+      color: white;
+      box-shadow: 0 4px 14px rgba(239, 68, 68, 0.3);
+    }
+    .btn-danger:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
+    }
+    
+    /* Terminal Console */
+    .terminal-card {
+      background: #020617;
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 1.2rem;
+      font-family: monospace;
+      font-size: 0.85rem;
+      color: #34d399;
+      box-shadow: inset 0 2px 8px rgba(0,0,0,0.8);
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      direction: ltr;
+      text-align: left;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div id="demoBanner" class="demo-banner">
+      <span>⚡ שרת הדמו של כריית ביטקוין (BTC) פעיל ומסמלץ פעילות כרייה מבוזרת ⚡</span>
+    </div>
+    
+    <header>
+      <div class="logo-container">
+        <span class="logo-icon">⛏️</span>
+        <div>
+          <h1>שרת ניהול כריית ביטקוין סולו</h1>
+          <span style="font-size: 0.8rem; color: var(--text-muted);">מערכת בקרה מבוזרת PC & Mobile</span>
+        </div>
+      </div>
+      
+      <div id="statusBadge" class="status-badge">
+        <span class="status-dot"></span>
+        <span id="statusText">מחובר לבריכת כרייה</span>
+      </div>
+    </header>
+    
+    <div id="alertBox" class="alert-banner">
+      <span style="font-size: 1.5rem;">⚠️</span>
+      <span id="alertDesc">התרעת טמפרטורה! המערכת הפחיתה ליבות פעילות במחשב.</span>
+    </div>
+    
+    <div class="dashboard-grid">
+      <!-- Main panel -->
+      <div class="main-panel">
+        <!-- Stats summary -->
+        <div class="card">
+          <div class="card-title">⚙️ נתוני כרייה בזמן אמת</div>
+          <div class="stats-grid">
+            <div class="stat-box">
+              <div class="stat-label">זמן פעילות שרת</div>
+              <div id="uptime" class="stat-value">0 שעות, 0 דק'</div>
             </div>
-
-            <div class="stat"><span>זמן ריצה:</span> <span id="uptime" class="value">0</span></div>
-            <div class="stat"><span>קצב גיבוב:</span> <span id="hashrate" class="value pulse">0 KH/s</span></div>
-            <div class="stat"><span>ליבות מחשוב פעילות:</span> <span id="activeCores" class="value">0 מתוך 0</span></div>
-            <div class="stat"><span>מניות (Shares) שנשלחו:</span> <span id="shares" class="value">0</span></div>
-            <div class="stat"><span>מניות שהתקבלו (Accepted):</span> <span id="accepted" class="value" style="color: #4ade80;">0</span></div>
-            <div class="stat"><span>קושי שיא שהושג (Best Share):</span> <span id="bestDiff" class="value" style="color: #fbbf24;">0</span></div>
-            <div class="stat" id="bestHashRow" style="font-size: 0.8rem; border-bottom: none; display: none;">
-              <span style="color: #94a3b8;">ההאש הכי טוב:</span>
-              <span id="bestHash" style="font-family: monospace; color: #94a3b8; word-break: break-all; max-width: 70%; text-align: left;">N/A</span>
+            <div class="stat-box">
+              <div class="stat-label">קצב גיבוב כולל</div>
+              <div id="hashrate" class="stat-value primary">0 KH/s</div>
             </div>
-            
-            <div class="health-grid">
-              <div class="health-item">
-                <div class="health-label">🌡️ טמפרטורת מעבד</div>
-                <div class="health-value" id="healthTemp">טוען...</div>
-              </div>
-              <div class="health-item">
-                <div class="health-label">📊 עומס מערכת (Load)</div>
-                <div class="health-value" id="healthLoad">טוען...</div>
-              </div>
+            <div class="stat-box">
+              <div class="stat-label">ליבות כרייה (PC)</div>
+              <div id="activeCores" class="stat-value accent" style="direction: ltr;">0 / 0</div>
             </div>
-
-            <button class="stop-btn" onclick="stopMiner()">🛑 עצור כרייה ושחרר מעבד</button>
-
-            <hr style="border-color: rgba(255, 255, 255, 0.05); margin: 1.5rem 0;">
-            <h3 style="margin: 0; font-size: 1.2rem;">ביטקוין שהורווח:</h3>
-            <div id="money" class="money">0.00000000 ₿</div>
-            
-            <hr style="border-color: rgba(255, 255, 255, 0.05); margin: 1.5rem 0;">
-            <h3 style="margin: 0 0 0.5rem 0; text-align: right; font-size: 1.1rem; color: #cbd5e1;">🖥️ פלט הטרמינל (Live Logs):</h3>
-            <div id="terminal">טוען לוגים...</div>
+            <div class="stat-box">
+              <div class="stat-label">פתרונות (Shares)</div>
+              <div id="shares" class="stat-value success">0</div>
+            </div>
           </div>
-          
-          <script>
-            function formatTime(seconds) {
-              const h = Math.floor(seconds / 3600);
-              const m = Math.floor((seconds % 3600) / 60);
-              return \`\${h} שעות, \${m} דקות\`;
+        </div>
+        
+        <!-- Distributed Workers -->
+        <div class="card">
+          <div class="workers-section-header">
+            <div class="card-title" style="margin-bottom: 0;">📱 סמארטפונים מבוזרים (Redmi 13C)</div>
+            <button id="togglePhoneMiningBtn" class="btn btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;" onclick="togglePhoneMining()">
+              טוען...
+            </button>
+          </div>
+          <div id="workersGrid" class="workers-grid">
+            <div class="no-workers">לא מחוברים סמארטפונים כרגע. הפעל את סקריפט ה-Daemon בטלפון כדי לחבר אותו.</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Side panel -->
+      <div class="side-panel">
+        <!-- Health status -->
+        <div class="card">
+          <div class="card-title">🌡️ בריאות המחשב המרכזי</div>
+          <div class="health-container">
+            <div class="health-row">
+              <span class="worker-stat-label">טמפרטורת מעבד PC</span>
+              <span id="pcTemp" class="health-val">טוען...</span>
+            </div>
+            <div class="health-row">
+              <span class="worker-stat-label">עומס מעבד (Load)</span>
+              <span id="pcLoad" class="health-val">טוען...</span>
+            </div>
+            <div class="health-row">
+              <span class="worker-stat-label">כתובת ארנק לקבלת תשלום</span>
+              <span id="walletAddress" class="health-val" style="font-size: 0.75rem; word-break: break-all; color: var(--accent);"></span>
+            </div>
+            <div class="health-row">
+              <span class="worker-stat-label">קושי שיא שנמצא (CPU)</span>
+              <span id="bestDiff" class="health-val" style="color: var(--primary);">0</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Controls -->
+        <div class="card">
+          <div class="card-title">🛠️ בקרת מערכת</div>
+          <div class="controls-panel">
+            <button id="toggleDemoBtn" class="btn btn-secondary" onclick="toggleDemoMode()">
+              🔌 כניסה למצב דמו
+            </button>
+            <button class="btn btn-danger" onclick="stopMiner()">
+              🛑 עצור כרייה
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Live logs -->
+    <div class="card" style="flex-grow: 1;">
+      <div class="card-title">📝 פלט הטרמינל (Live Logs)</div>
+      <div id="terminal" class="terminal-card">טוען לוגים...</div>
+    </div>
+  </div>
+  
+  <script>
+    function formatTime(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      return \`\${h} שעות, \${m} דקות\`;
+    }
+    
+    async function stopMiner() {
+      if (confirm('האם אתה בטוח שברצונך לעצור את הכרייה כעת?')) {
+        try {
+          const res = await fetch('/stop');
+          const data = await res.json();
+          if (data.success) {
+            alert('הכרייה נעצרה בהצלחה! החלון ייסגר.');
+            window.close();
+            document.body.innerHTML = '<div class="card" style="max-width: 650px; margin: 10% auto; text-align: center;"><h1>🛑 הכרייה כובתה בהצלחה</h1><p>ניתן לסגור דף זה. כל ליבות המעבד שוחררו לחלוטין.</p></div>';
+          }
+        } catch(e) {
+          alert('שגיאה בעצירת המיינר: ' + e.message);
+        }
+      }
+    }
+    
+    async function togglePhoneMining() {
+      try {
+        const res = await fetch('/api/workers/toggle', { method: 'POST' });
+        const data = await res.json();
+        updatePhoneMiningBtn(data.phones_mining_enabled);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    
+    async function toggleDemoMode() {
+      try {
+        const res = await fetch('/api/demo/toggle', { method: 'POST' });
+        const data = await res.json();
+        updateDemoUI(data.demo_active);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    
+    function updatePhoneMiningBtn(enabled) {
+      const btn = document.getElementById('togglePhoneMiningBtn');
+      if (enabled) {
+        btn.innerText = '🛑 עצור כריית פלאפונים';
+        btn.className = 'btn btn-secondary';
+        btn.style.color = '#ef4444';
+        btn.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+      } else {
+        btn.innerText = '⚡ הפעל כריית פלאפונים';
+        btn.className = 'btn btn-primary';
+        btn.style.color = '#070a13';
+        btn.style.borderColor = 'transparent';
+      }
+    }
+    
+    function updateDemoUI(active) {
+      const banner = document.getElementById('demoBanner');
+      const badge = document.getElementById('statusBadge');
+      const text = document.getElementById('statusText');
+      const btn = document.getElementById('toggleDemoBtn');
+      
+      if (active) {
+        banner.style.display = 'flex';
+        badge.className = 'status-badge demo';
+        text.innerText = 'מחובר (מצב דמו)';
+        btn.innerText = '🔌 כבה מצב דמו';
+        btn.style.color = '#f59e0b';
+        btn.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+      } else {
+        banner.style.display = 'none';
+        badge.className = 'status-badge';
+        text.innerText = 'מחובר לבריכת כרייה';
+        btn.innerText = '🔌 הפעל מצב דמו';
+        btn.style.color = '';
+        btn.style.borderColor = '';
+      }
+    }
+
+    async function fetchStats() {
+      try {
+        const res = await fetch('/stats');
+        const data = await res.json();
+        
+        // Update basic info
+        document.getElementById('uptime').innerText = formatTime(data.uptime_seconds);
+        document.getElementById('hashrate').innerText = data.hashrate_khs + ' KH/s';
+        document.getElementById('shares').innerText = data.shares_found + ' (' + data.shares_accepted + ' Accepted)';
+        
+        // Update PC Cores
+        const activeCoresEl = document.getElementById('activeCores');
+        activeCoresEl.innerText = data.health.activeCores + ' / ' + data.health.configuredCores;
+        
+        // Update PC Health
+        const pcTempEl = document.getElementById('pcTemp');
+        if (data.health.temp !== null) {
+          pcTempEl.innerText = data.health.temp.toFixed(1) + '°C';
+          if (data.health.temp >= 85) pcTempEl.style.color = 'var(--error)';
+          else if (data.health.temp >= 80) pcTempEl.style.color = 'var(--warning)';
+          else pcTempEl.style.color = 'var(--success)';
+        } else {
+          pcTempEl.innerText = 'N/A';
+          pcTempEl.style.color = '';
+        }
+        
+        document.getElementById('pcLoad').innerText = data.health.load;
+        
+        // Update best share difficulty
+        const bestDiffVal = data.best_difficulty || 0;
+        let formattedDiff = bestDiffVal;
+        if (bestDiffVal === 0) formattedDiff = '0';
+        else if (bestDiffVal < 0.0001) formattedDiff = bestDiffVal.toExponential(4);
+        else if (bestDiffVal < 1) formattedDiff = bestDiffVal.toFixed(6);
+        else formattedDiff = bestDiffVal.toFixed(2);
+        
+        document.getElementById('bestDiff').innerText = formattedDiff;
+        
+        // Toggles
+        updatePhoneMiningBtn(data.phones_mining_enabled);
+        updateDemoUI(data.demo_mode_active);
+        
+        // Update wallet address
+        const wallet = data.wallet_address || 'bc1qwm58u3zaf63f0dx63qk5p867kps26ykf3uylcs';
+        document.getElementById('walletAddress').innerText = wallet;
+        
+        // Alert banner
+        const alertBox = document.getElementById('alertBox');
+        if (data.health.status !== 'ok') {
+          document.getElementById('alertDesc').innerText = data.health.recommendation;
+          alertBox.style.display = 'flex';
+        } else {
+          alertBox.style.display = 'none';
+        }
+        
+        // Update remote workers list
+        const grid = document.getElementById('workersGrid');
+        if (data.remote_workers && data.remote_workers.length > 0) {
+          let html = '';
+          data.remote_workers.forEach(w => {
+            const tempVal = w.temp || 38.0;
+            let tempColor = 'var(--success)';
+            let cardClass = '';
+            if (tempVal >= 65) {
+              tempColor = 'var(--error)';
+              cardClass = 'critical';
+            } else if (tempVal >= 55) {
+              tempColor = 'var(--warning)';
+              cardClass = 'warning';
             }
             
-            async function stopMiner() {
-              if (confirm('האם אתה בטוח שברצונך לעצור את הכרייה כעת?')) {
-                try {
-                  const res = await fetch('/stop');
-                  const data = await res.json();
-                  if (data.success) {
-                    alert('הכרייה נעצרה בהצלחה! החלון ייסגר.');
-                    window.close();
-                    document.body.innerHTML = '<div class="card"><h1>🛑 הכרייה כובתה בהצלחה</h1><p>ניתן לסגור דף זה. כל ליבות המעבד שוחררו לחלוטין.</p></div>';
-                  }
-                } catch(e) {
-                  alert('שגיאה בעצירת המיינר: ' + e.message);
-                }
-              }
+            const isOnline = (Date.now() - w.last_seen) < 15000;
+            if (!isOnline) {
+              cardClass = 'offline';
             }
-
-            async function fetchStats() {
-              try {
-                const res = await fetch('/stats');
-                const data = await res.json();
-                document.getElementById('uptime').innerText = formatTime(data.uptime_seconds);
-                document.getElementById('hashrate').innerText = data.hashrate_khs + ' KH/s';
-                document.getElementById('shares').innerText = data.shares_found;
-                document.getElementById('accepted').innerText = data.shares_accepted;
-                
-                // עדכון קושי שיא
-                const bestDiffEl = document.getElementById('bestDiff');
-                const bestDiffVal = data.best_difficulty || 0;
-                let formattedDiff = bestDiffVal;
-                if (bestDiffVal === 0) {
-                  formattedDiff = '0';
-                } else if (bestDiffVal < 0.0001) {
-                  formattedDiff = bestDiffVal.toExponential(4);
-                } else if (bestDiffVal < 1) {
-                  formattedDiff = bestDiffVal.toFixed(6);
-                } else {
-                  formattedDiff = bestDiffVal.toFixed(2);
-                }
-                bestDiffEl.innerText = formattedDiff;
-                
-                if (data.best_difficulty_hash) {
-                  document.getElementById('bestHashRow').style.display = 'flex';
-                  document.getElementById('bestHash').innerText = data.best_difficulty_hash;
-                } else {
-                  document.getElementById('bestHashRow').style.display = 'none';
-                }
-                
-                // עדכון ליבות פעילות
-                const coresEl = document.getElementById('activeCores');
-                coresEl.innerText = data.health.activeCores + ' מתוך ' + data.health.configuredCores;
-                if (data.health.activeCores < data.health.configuredCores) {
-                  coresEl.style.color = '#fbbf24'; // orange/yellow
-                } else {
-                  coresEl.style.color = '#38bdf8'; // blue
-                }
-                
-                // עדכון מדדי בריאות
-                const tempEl = document.getElementById('healthTemp');
-                if (data.health.temp !== null) {
-                  tempEl.innerText = data.health.temp.toFixed(1) + '°C';
-                  if (data.health.temp >= 85) {
-                    tempEl.style.color = '#f87171'; // red
-                  } else if (data.health.temp >= 80) {
-                    tempEl.style.color = '#fbbf24'; // orange
-                  } else {
-                    tempEl.style.color = '#4ade80'; // green
-                  }
-                } else {
-                  tempEl.innerText = 'N/A';
-                  tempEl.style.color = '#94a3b8';
-                }
-
-                const loadEl = document.getElementById('healthLoad');
-                loadEl.innerText = data.health.load;
-                if (data.health.status === 'warning' && data.health.temp === null) {
-                  loadEl.style.color = '#fbbf24';
-                } else {
-                  loadEl.style.color = '#4ade80';
-                }
-                
-                // התראות ובאנרים
-                const alertBox = document.getElementById('alertBox');
-                if (data.health.status !== 'ok') {
-                  document.getElementById('alertDesc').innerText = data.health.recommendation;
-                  alertBox.className = 'alert-box ' + data.health.status;
-                  alertBox.style.display = 'flex';
-                } else {
-                  alertBox.style.display = 'none';
-                }
-
-                // עדכון הטרמינל
-                const term = document.getElementById('terminal');
-                const atBottom = term.scrollHeight - term.clientHeight <= term.scrollTop + 20;
-                term.innerText = data.logs.join('\\n');
-                
-                if (atBottom) {
-                  term.scrollTop = term.scrollHeight;
-                }
-              } catch (e) {
-                console.error(e);
-              }
-            }
-            setInterval(fetchStats, 2000);
-            fetchStats();
-          </script>
-        </body>
-        </html>
-      `);
+            
+            const threadsCount = w.is_mining ? w.threads : 0;
+            
+            html += \`
+              <div class="worker-card \${cardClass}">
+                <div class="worker-header">
+                  <div class="worker-name">
+                    <span>📱</span>
+                    <span>\${w.name}</span>
+                  </div>
+                  <span class="worker-badge" style="background: \${w.is_mining ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)'}; border-color: \${w.is_mining ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}; color: \${w.is_mining ? 'var(--success)' : 'var(--error)'};">
+                    \${w.is_mining ? 'כורה' : 'מושהה'}
+                  </span>
+                </div>
+                <div class="worker-stat-row">
+                  <span class="worker-stat-label">טמפרטורה</span>
+                  <span class="worker-stat-val" style="color: \${tempColor}; font-weight: bold;">\${tempVal.toFixed(1)}°C</span>
+                </div>
+                <div class="worker-stat-row">
+                  <span class="worker-stat-label">קצב גיבוב</span>
+                  <span class="worker-stat-val" style="color: var(--accent);">\${w.hashrate.toFixed(1)} KH/s</span>
+                </div>
+                <div class="worker-stat-row">
+                  <span class="worker-stat-label">ליבות (Threads)</span>
+                  <span class="worker-stat-val" style="direction: ltr; display: inline-block;">\${threadsCount} / \${w.max_cores}</span>
+                </div>
+                <div class="worker-stat-row">
+                  <span class="worker-stat-label">פתרונות (Shares)</span>
+                  <span class="worker-stat-val" style="color: var(--success);">\${w.shares_accepted}</span>
+                </div>
+                <div class="worker-stat-row">
+                  <span class="worker-stat-label">זמן ריצה</span>
+                  <span class="worker-stat-val">\${formatTime(w.uptime)}</span>
+                </div>
+                <div class="temp-bar-container">
+                  <div class="temp-bar" style="width: \${Math.min(100, (tempVal / 80) * 100)}%; background-color: \${tempColor};"></div>
+                </div>
+              </div>
+            \`;
+          });
+          grid.innerHTML = html;
+        } else {
+          grid.innerHTML = \`<div class="no-workers">לא מחוברים סמארטפונים כרגע. הפעל את סקריפט ה-Daemon בטלפון כדי לחבר אותו.</div>\`;
+        }
+        
+        // Terminal logs update
+        const term = document.getElementById('terminal');
+        const atBottom = term.scrollHeight - term.clientHeight <= term.scrollTop + 20;
+        term.innerText = data.logs.join('\\n');
+        if (atBottom) {
+          term.scrollTop = term.scrollHeight;
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    
+    setInterval(fetchStats, 2000);
+    fetchStats();
+  </script>
+</body>
+</html>`);
       return;
     }
     
@@ -735,6 +1499,7 @@ if (isMainThread) {
   }).listen(HTTP_PORT, () => {
     console.log(`🌐 לוח בקרה אינטרנטי זמין בכתובת: http://localhost:${HTTP_PORT}`);
   });
+
 
   // ניהול החיבור (Socket)
   let socket = null;
