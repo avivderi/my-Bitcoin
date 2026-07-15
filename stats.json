@@ -1,0 +1,10 @@
+{
+  "uptime_seconds": 0,
+  "shares_found": 0,
+  "shares_accepted": 0,
+  "hashrate_khs": 0,
+  "total_hashes": 0,
+  "difficulty": 100000,
+  "best_difficulty": 0,
+  "best_difficulty_hash": ""
+}

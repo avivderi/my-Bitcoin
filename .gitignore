@@ -1,6 +1,5 @@
 .env
 node_modules/
-stats.json
 stats.json.tmp
 xmrig-miner/
 *.tmp
