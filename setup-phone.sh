@@ -114,8 +114,9 @@ echo -e "${GREEN}[+] נבחר מכשיר בהצלחה:${NC} $device_id"
 
 # 6. עירור מסך הטלפון
 echo -e "${YELLOW}[*] מעורר את מסך הטלפון...${NC}"
-adb -s "$device_id" shell input keyevent 224
-echo -e "${YELLOW}[!] שים לב: ודא שמסך הטלפון פתוח לחלוטין (UNLOCKED) כדי שההתקנה תעבור בהצלחה.${NC}"
+adb -s "$device_id" shell input keyevent 224 >/dev/null 2>&1 || true
+echo -e "${YELLOW}[!] שים לב: ודא שמסך הטלפון דולק ופתוח לחלוטין (UNLOCKED).${NC}"
+echo -e "${YELLOW}(במכשירי Xiaomi מסוימים, ייתכן שתצטרך לאשר התקנות ידנית או להפעיל 'USB debugging (Security settings)').${NC}"
 sleep 1.5
 
 # 6.5 התקנת Tailscale במידת הצורך
@@ -159,13 +160,23 @@ else
         curl -L -# -o "$termux_apk" "https://f-droid.org/repo/com.termux_118.apk"
     fi
     if [ -f "$termux_apk" ]; then
-        echo -e "${YELLOW}[*] מתקין את Termux בטלפון (זה עלול לקחת כחצי דקה)...${NC}"
+        echo -e "${YELLOW}🚨 שים לב למסך הפלאפון! 🚨${NC}"
+        echo -e "${YELLOW}עלולה לקפוץ בקשת אישור התקנה (Install via USB). אנא לחץ 'התקן' או 'Allow' מיד כשתראה אותה.${NC}"
+        echo -e "${YELLOW}[*] מתקין את Termux בטלפון...${NC}"
         adb -s "$device_id" install -r "$termux_apk"
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}[+] Termux הותקן בהצלחה בטלפון!${NC}"
         else
-            echo -e "${RED}[-] התקנת האפליקציה נכשלה. נסה להתקין את Termux ידנית ולאחר מכן הרץ שוב את הסקריפט.${NC}"
-            exit 1
+            echo -e "${RED}[-] התקנת האפליקציה דרך USB נכשלה (כנראה נחסמה על ידי מערכת ההפעלה של Xiaomi).${NC}"
+            echo -e "${YELLOW}👉 אין בעיה! פשוט פתח עכשיו את Google Play בפלאפון, חפש 'Termux' והתקן אותו ידנית.${NC}"
+            read -p "הקש Enter רק לאחר שסיימת להתקין את Termux בטלפון כדי להמשיך..."
+            
+            # בדיקה נוספת לוודא שהמשתמש אכן התקין
+            if ! adb -s "$device_id" shell pm list packages | grep -q "com.termux"; then
+                echo -e "${RED}[-] Termux עדיין לא מותקן בטלפון. ההתקנה מבוטלת. אנא נסה שוב.${NC}"
+                exit 1
+            fi
+            echo -e "${GREEN}[+] מעולה! Termux זוהה. ממשיכים...${NC}"
         fi
     else
         echo -e "${RED}[-] הורדת קובץ ה-APK נכשלה. אנא בדוק את חיבור האינטרנט שלך.${NC}"
@@ -262,14 +273,18 @@ sleep 4
 # 11. הקלדה אוטומטית של פקודת ההרצה בתוך Termux
 echo -e "${YELLOW}[*] שולח פקודת התקנה לתוך הטרמינל בטלפון...${NC}"
 # הקלדת הפקודה (מחליפים רווחים ב-%s עבור פקודת input text של אנדרואיד)
-adb -s "$device_id" shell input text "sh%s/sdcard/Android/data/com.termux/files/bootstrap.sh"
+adb -s "$device_id" shell input text "sh%s/sdcard/Android/data/com.termux/files/bootstrap.sh" >/dev/null 2>&1 || true
 sleep 1.5
-adb -s "$device_id" shell input keyevent 66 # מקש Enter
+adb -s "$device_id" shell input keyevent 66 >/dev/null 2>&1 || true # מקש Enter
 
 echo ""
 echo -e "${GREEN}====================================================${NC}"
 echo -e "${GREEN}🎉 התקנת הוורקר בטלפון הסתיימה בהצלחה!${NC}"
-echo -e "שים לב לנעשה במסך הטלפון - Termux כעת יתקין את Python ויחל לכרות."
+echo -e "שים לב לנעשה במסך הטלפון - Termux כעת אמור להתקין את Python ולהתחיל לכרות."
+echo -e "${RED}⚠️ חשוב מאוד (למכשירי Xiaomi):${NC}"
+echo -e "אם הטרמינל בפלאפון נשאר שחור וריק בגלל חסימת אבטחה, נא להקליד בו ידנית:"
+echo -e "👉 ${CYAN}sh /sdcard/Android/data/com.termux/files/bootstrap.sh${NC} (וללחוץ Enter)"
+echo -e ""
 echo -e "הוורקר יופיע בלוח הבקרה של המחשב תחת השם: ${CYAN}$worker_name${NC}"
 echo ""
 echo -e "${YELLOW}💡 טיפ לעבודה רציפה ונקייה מבעיות (Set-and-Forget):${NC}"

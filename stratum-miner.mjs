@@ -185,7 +185,7 @@ if (isMainThread) {
   const BTC_ADDRESS = process.env.BTC_ADDRESS || 'bc1qXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
   const WORKER_NAME = process.env.WORKER_NAME || 'nodejs-worker';
   const HTTP_PORT = process.env.HTTP_PORT || 3224;
-  const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
+  const BIND_HOST = process.env.BIND_HOST || '0.0.0.0';
   const ACK_TIMEOUT_MS = 15000; // 15 seconds acknowledgment timeout
   const COOL_DOWN_TEMP = parseFloat(process.env.COOL_DOWN_TEMP || '85');
   const RESUME_RAMP_TEMP = parseFloat(process.env.RESUME_RAMP_TEMP || '80');
@@ -878,6 +878,20 @@ if (isMainThread) {
         }
       }
 
+      let totalActiveCoresCombined = localActiveCores;
+      let totalConfiguredCoresCombined = systemHealth.configuredCores;
+
+      for (const worker of remoteWorkers.values()) {
+        const isDemoWorker = worker.name.includes('-demo');
+        if (isDemoWorker === demoModeActive) {
+          const isOnline = (Date.now() - worker.last_seen) < 15000;
+          if (isOnline && worker.is_mining) {
+            totalActiveCoresCombined += worker.threads || 0;
+            totalConfiguredCoresCombined += worker.max_cores || 8;
+          }
+        }
+      }
+
       const stats = {
         uptime_seconds: uptimeSec,
         shares_found: localSharesFound,
@@ -888,7 +902,8 @@ if (isMainThread) {
         logs: demoModeActive ? logs.concat(demoLogs) : logs,
         health: {
           ...systemHealth,
-          activeCores: localActiveCores
+          activeCores: totalActiveCoresCombined,
+          configuredCores: totalConfiguredCoresCombined
         },
         best_difficulty: bestDifficulty,
         best_difficulty_hash: bestDifficultyHash,

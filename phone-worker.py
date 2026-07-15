@@ -309,7 +309,7 @@ def send_heartbeat(temp, hashrate, shares_accepted, shares_rejected, uptime):
         return None
 
 def main():
-    global current_threads, total_shares_accepted, sim_shares, sim_uptime, current_hashrate
+    global current_threads, total_shares_accepted, sim_shares, sim_uptime, current_hashrate, is_mining, current_job_id
     print(f"====================================================")
     print(f"📱 Redmi 13C Solo Bitcoin Worker Daemon started" + (" [DEMO MODE ACTIVE]" if IS_DEMO else ""))
     print(f"🔧 Worker Name: {WORKER_NAME}" + ("-demo" if IS_DEMO else ""))
