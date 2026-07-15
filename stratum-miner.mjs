@@ -49,12 +49,14 @@ function packUInt32LE(hexOrNum) {
 }
 
 function buildMerkleRoot(coinbaseHash, merkleBranch) {
-  let root = coinbaseHash;
+  let root = Buffer.from(coinbaseHash).reverse();
   for (const branch of merkleBranch) {
-    root = doubleSha256(Buffer.concat([root, Buffer.from(branch, 'hex')]));
+    const branchLE = swapEndianWords(branch);
+    root = Buffer.from(doubleSha256(Buffer.concat([root, branchLE]))).reverse();
   }
   return root;
 }
+
 
 function hashToBigInt(buf) {
   const val0 = buf.readBigUInt64LE(0);

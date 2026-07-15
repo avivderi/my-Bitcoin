@@ -133,9 +133,13 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
         coinbase_hex = job['coinb1'] + extranonce1 + extranonce2 + job['coinb2']
         coinbase_hash = hashlib.sha256(hashlib.sha256(binascii.unhexlify(coinbase_hex)).digest()).digest()
         
-        root = coinbase_hash
+        # Start Merkle root calculation in little-endian
+        root = coinbase_hash[::-1]
         for branch in merkle_branch:
-            root = hashlib.sha256(hashlib.sha256(root + binascii.unhexlify(branch)).digest()).digest()
+            # Swap branch to little-endian bytes using swap_endian_words
+            branch_le = binascii.unhexlify(swap_endian_words(branch))
+            combined = root + branch_le
+            root = hashlib.sha256(hashlib.sha256(combined).digest()).digest()[::-1]
             
         header_prefix = version + prev_hash + root + ntime + nbits
         
@@ -164,9 +168,11 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
                 })
                 coinbase_hex = job['coinb1'] + extranonce1 + extranonce2 + job['coinb2']
                 coinbase_hash = hashlib.sha256(hashlib.sha256(binascii.unhexlify(coinbase_hex)).digest()).digest()
-                root = coinbase_hash
+                root = coinbase_hash[::-1]
                 for branch in merkle_branch:
-                    root = hashlib.sha256(hashlib.sha256(root + binascii.unhexlify(branch)).digest()).digest()
+                    branch_le = binascii.unhexlify(swap_endian_words(branch))
+                    combined = root + branch_le
+                    root = hashlib.sha256(hashlib.sha256(combined).digest()).digest()[::-1]
                 header_prefix = version + prev_hash + root + ntime + nbits
                 
             nonce = (nonce + 1) & 0xffffffff
