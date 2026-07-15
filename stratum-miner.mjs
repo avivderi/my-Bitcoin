@@ -748,6 +748,7 @@ if (isMainThread) {
             } else {
               console.log('▶️ כריית הביטקוין חודשה. ליבות הכרייה מופעלות מחדש...');
               coolingMode = false;
+              currentRampLimit = 1; // איפוס לליבה אחת כדי להבטיח עלייה הדרגתית (Ramp-up)
               checkSystemHealth();
             }
             res.writeHead(200, { 'Content-Type': 'application/json' });
