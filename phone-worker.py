@@ -148,7 +148,7 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
             combined = root + binascii.unhexlify(branch)
             root = hashlib.sha256(hashlib.sha256(combined).digest()).digest()
             
-        merkle_root_le = root[::-1]
+        merkle_root_le = root
         header_prefix = version + prev_hash + merkle_root_le + ntime + nbits
         
         nonce = start_nonce
@@ -180,7 +180,7 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
                 for branch in merkle_branch:
                     combined = root + binascii.unhexlify(branch)
                     root = hashlib.sha256(hashlib.sha256(combined).digest()).digest()
-                merkle_root_le = root[::-1]
+                merkle_root_le = root
                 header_prefix = version + prev_hash + merkle_root_le + ntime + nbits
                 
             nonce = (nonce + 1) & 0xffffffff

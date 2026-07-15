@@ -2119,10 +2119,9 @@ if (isMainThread) {
     
     const coinbaseHex = currentJob.coinb1 + extranonce1 + extranonce2 + currentJob.coinb2;
     const coinbaseHash = doubleSha256(Buffer.from(coinbaseHex, 'hex'));
-    const merkleRootBE = buildMerkleRoot(coinbaseHash, merkleBranch);
-    const merkleRootBuf = Buffer.from(merkleRootBE).reverse();
+    const merkleRoot = buildMerkleRoot(coinbaseHash, merkleBranch);
     
-    headerPrefixBuf = Buffer.concat([versionBuf, prevHashBuf, merkleRootBuf, ntimeBuf, nbitsBuf]);
+    headerPrefixBuf = Buffer.concat([versionBuf, prevHashBuf, merkleRoot, ntimeBuf, nbitsBuf]);
     headerPrefixBuf.copy(headerBuf, 0, 0, 76);
   }
   
@@ -2147,8 +2146,11 @@ if (isMainThread) {
       }
       
       if (hashValue <= shareTarget) {
-        // Reverted: Stratum v1 strictly expects the nonce hex string to be little-endian format.
-        const nonceHex = packUInt32LE(nonce).toString('hex');
+        // Fix for "Difficulty too low" error:
+        // The stratum protocol expects the nonce in the submit payload as a hex string of the big-endian representation,
+        // because the pool's validation reverses it back to little-endian when reconstructing the header.
+        // Therefore, we write it as big-endian (BE) here so the hex string is '00000000' up to 'ffffffff' in normal readable order.
+        const nonceHex = nonce.toString(16).padStart(8, '0');
         
         parentPort.postMessage({
           type: 'share',
