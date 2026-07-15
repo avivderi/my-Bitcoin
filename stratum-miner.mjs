@@ -249,8 +249,11 @@ if (isMainThread) {
   const workers = [];
   const pendingSubmissions = new Set();
 
+  let activeCoresTarget = 1;
+
   // פונקציה לניהול דינמי של כמות הוורקרים הפעילים בהתאם לעומס וטמפרטורה
   function adjustWorkers(targetCores) {
+    activeCoresTarget = targetCores;
     if (workers.length === targetCores) return;
 
     if (workers.length < targetCores) {
@@ -259,6 +262,8 @@ if (isMainThread) {
       for (let i = 0; i < toAdd; i++) {
         const worker = new Worker(fileURLToPath(import.meta.url));
         worker.hashrateKHs = 0;
+        worker.intentionalStop = false;
+
         worker.on('message', (msg) => {
           if (msg.type === 'share') {
             if (typeof demoModeActive !== 'undefined' && demoModeActive) {
@@ -296,6 +301,27 @@ if (isMainThread) {
 
               workers.forEach(w => w.postMessage({ type: 'best_difficulty', globalBestDifficulty: bestDifficulty }));
             }
+          } else if (msg.type === 'extranonce2') {
+            console.log(`💻 [PC Worker Thread] Started mining new job with extranonce2: ${msg.extranonce2}`);
+          }
+        });
+
+        worker.on('error', (err) => {
+          console.error(`❌ שגיאה בליבת כרייה מקומית: ${err.message}`);
+        });
+
+        worker.on('exit', (code) => {
+          const idx = workers.indexOf(worker);
+          if (idx !== -1) {
+            workers.splice(idx, 1);
+          }
+          if (code !== 0 && !worker.intentionalStop) {
+            console.warn(`⚠️ ליבת כרייה קרסה באופן לא צפוי עם קוד יציאה ${code}. מפעיל ליבה חלופית בעוד שנייה...`);
+            setTimeout(() => {
+              adjustWorkers(activeCoresTarget);
+            }, 1000);
+          } else {
+            console.log(`ℹ️ ליבת כרייה נסגרה בצורה תקינה.`);
           }
         });
         
@@ -318,6 +344,7 @@ if (isMainThread) {
       for (let i = 0; i < toRemove; i++) {
         const worker = workers.pop();
         if (worker) {
+          worker.intentionalStop = true;
           worker.terminate();
         }
       }
@@ -545,8 +572,21 @@ if (isMainThread) {
               worker.last_seen = now;
             }
 
+            if (payload.logs && Array.isArray(payload.logs)) {
+              payload.logs.forEach(msg => {
+                console.log(`📱 [Worker ${name}] ${msg}`);
+              });
+            }
+
             // Dynamic thermal-aware thread scaling
             let targetThreads = worker.threads;
+            const maxAllowedThreads = Math.max(1, Math.min(7, worker.max_cores - 1));
+            
+            // Enforce safety ceiling immediately if current target is too high
+            if (targetThreads > maxAllowedThreads) {
+              targetThreads = maxAllowedThreads;
+            }
+
             if (phonesMiningEnabled) {
               if (worker.temp >= 65) {
                 if (now - worker.last_adjust > 15000) { // 15s cooldown
@@ -558,7 +598,7 @@ if (isMainThread) {
                 }
               } else if (worker.temp <= 55) {
                 if (now - worker.last_adjust > 15000) {
-                  if (targetThreads < worker.max_cores) {
+                  if (targetThreads < maxAllowedThreads) {
                     targetThreads++;
                     worker.last_adjust = now;
                     console.log(`📈 [Worker ${name}] Thermal safety cleared (${worker.temp.toFixed(1)}°C). Scaling threads up to ${targetThreads}/${worker.max_cores}`);
@@ -567,6 +607,9 @@ if (isMainThread) {
               }
             }
             worker.threads = targetThreads;
+
+            const clientJobId = payload.job_id || null;
+            const isJobChanged = currentJob ? (currentJob.jobId !== clientJobId) : false;
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
@@ -577,7 +620,7 @@ if (isMainThread) {
               difficulty: difficulty,
               extranonce1: extranonce1,
               extranonce2Size: extranonce2Size,
-              job_changed: currentJob ? true : false
+              job_changed: isJobChanged
             }));
             return;
           }
@@ -1248,13 +1291,17 @@ if (isMainThread) {
               <div class="stat-label">זמן פעילות שרת</div>
               <div id="uptime" class="stat-value">0 שעות, 0 דק'</div>
             </div>
+            <div id="combinedHashrateBox" class="stat-box" style="border: 1px solid rgba(245, 158, 11, 0.3); background: rgba(245, 158, 11, 0.03);">
+              <div class="stat-label" style="color: var(--primary); font-weight: bold;">🔥 קצב גיבוב משולב</div>
+              <div id="combinedHashrate" class="stat-value primary" style="font-size: 2.2rem; text-shadow: 0 0 10px rgba(245, 158, 11, 0.4);">0 KH/s</div>
+            </div>
             <div class="stat-box">
-              <div class="stat-label">קצב גיבוב כולל</div>
-              <div id="hashrate" class="stat-value primary">0 KH/s</div>
+              <div class="stat-label">קצב גיבוב PC</div>
+              <div id="pcHashrate" class="stat-value accent">0 KH/s</div>
             </div>
             <div class="stat-box">
               <div class="stat-label">ליבות כרייה (PC)</div>
-              <div id="activeCores" class="stat-value accent" style="direction: ltr;">0 / 0</div>
+              <div id="activeCores" class="stat-value" style="direction: ltr;">0 / 0</div>
             </div>
             <div class="stat-box">
               <div class="stat-label">פתרונות (Shares)</div>
@@ -1450,7 +1497,30 @@ if (isMainThread) {
         
         // Update basic info
         document.getElementById('uptime').innerText = formatTime(data.uptime_seconds);
-        document.getElementById('hashrate').innerText = data.hashrate_khs + ' KH/s';
+        document.getElementById('pcHashrate').innerText = data.hashrate_khs + ' KH/s';
+        
+        let combinedHashrate = data.hashrate_khs;
+        if (data.remote_workers) {
+          data.remote_workers.forEach(w => {
+            const isDemoWorker = w.name.includes('-demo');
+            if (isDemoWorker === data.demo_mode_active) {
+              const isOnline = (Date.now() - w.last_seen) < 15000;
+              if (isOnline && w.is_mining) {
+                combinedHashrate += w.hashrate;
+              }
+            }
+          });
+        }
+        
+        const combinedHashrateEl = document.getElementById('combinedHashrate');
+        if (data.demo_mode_active) {
+          combinedHashrateEl.innerText = '[Demo] ' + combinedHashrate.toFixed(1) + ' KH/s';
+          combinedHashrateEl.style.color = 'var(--warning)';
+        } else {
+          combinedHashrateEl.innerText = combinedHashrate.toFixed(1) + ' KH/s';
+          combinedHashrateEl.style.color = '';
+        }
+        
         document.getElementById('shares').innerText = data.shares_found + ' (' + data.shares_accepted + ' Accepted)';
         
         // Update PC Cores
@@ -1743,7 +1813,10 @@ if (isMainThread) {
     originalLog(`\n\nסיכום: ${sharesFound} shares נמצאו, ${sharesAccepted} התקבלו.`);
     saveStatsSync();
     if (socket) socket.end();
-    workers.forEach(w => w.terminate());
+    workers.forEach(w => {
+      w.intentionalStop = true;
+      w.terminate();
+    });
     try {
       server.close(() => {
         process.exit(0);
@@ -1830,6 +1903,7 @@ if (isMainThread) {
   function setupNewExtranonce2() {
     extranonce2 = crypto.randomBytes(extranonce2Size).toString('hex');
     nonce = 0;
+    parentPort.postMessage({ type: 'extranonce2', extranonce2 });
     
     const coinbaseHex = currentJob.coinb1 + extranonce1 + extranonce2 + currentJob.coinb2;
     const coinbaseHash = doubleSha256(Buffer.from(coinbaseHex, 'hex'));

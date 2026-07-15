@@ -16,7 +16,7 @@ MASTER_IP = "127.0.0.1"      # Change to PC IP for remote mining
 MASTER_PORT = 3224           # Bitcoin Miner Control Server Port
 WORKER_NAME = "redmi-1"      # Unique name for this phone
 MAX_CORES = 8                # Redmi 13C has 8 cores
-DEFAULT_THREADS = 4          # Start with 4 threads for safety
+DEFAULT_THREADS = 6          # Start with 6 threads for better performance
 DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "")  # Secret token to authenticate with Master Server
 
 # Check for demo mode command line argument
@@ -48,6 +48,8 @@ total_shares_found = 0
 total_shares_accepted = 0
 current_hashrate = 0.0
 uptime_start = time.time()
+current_job_id = None
+pending_logs = []
 
 # Simulated state for demo mode
 sim_temp = 50.0
@@ -124,6 +126,10 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
         
         # Initialise extranonce2
         extranonce2 = binascii.hexlify(os.urandom(extranonce2_size)).decode()
+        result_queue.put({
+            'type': 'status',
+            'message': f"Started thread with extranonce2: {extranonce2}"
+        })
         coinbase_hex = job['coinb1'] + extranonce1 + extranonce2 + job['coinb2']
         coinbase_hash = hashlib.sha256(hashlib.sha256(binascii.unhexlify(coinbase_hex)).digest()).digest()
         
@@ -152,6 +158,10 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
                 })
                 # Re-setup
                 extranonce2 = binascii.hexlify(os.urandom(extranonce2_size)).decode()
+                result_queue.put({
+                    'type': 'status',
+                    'message': f"Rotated thread to new extranonce2: {extranonce2}"
+                })
                 coinbase_hex = job['coinb1'] + extranonce1 + extranonce2 + job['coinb2']
                 coinbase_hash = hashlib.sha256(hashlib.sha256(binascii.unhexlify(coinbase_hex)).digest()).digest()
                 root = coinbase_hash
@@ -201,7 +211,7 @@ def start_local_mining(job, difficulty, extranonce1, extranonce2_size, threads):
     is_mining = True
 
 def poll_results():
-    global current_hashrate, total_shares_found, result_queue
+    global current_hashrate, total_shares_found, result_queue, pending_logs
     if not is_mining or result_queue is None:
         current_hashrate = 0.0
         return
@@ -219,6 +229,9 @@ def poll_results():
             elif item['type'] == 'share':
                 total_shares_found += 1
                 submit_share(item['job_id'], item['extranonce2'], item['ntime'], item['nonce'])
+            elif item['type'] == 'status':
+                print(f"💬 {item['message']}")
+                pending_logs.append(item['message'])
     except Exception:
         pass
         
@@ -249,6 +262,7 @@ def submit_share(job_id, extranonce2, ntime, nonce):
 
 def send_heartbeat(temp, hashrate, shares_accepted, shares_rejected, uptime):
     """Send telemetry payload to the Bitcoin Master Server and receive mining directives."""
+    global current_job_id, pending_logs
     url = f"http://{MASTER_IP}:{MASTER_PORT}/api/worker/heartbeat"
     payload = {
         "name": WORKER_NAME + ("-demo" if IS_DEMO else ""),
@@ -260,8 +274,11 @@ def send_heartbeat(temp, hashrate, shares_accepted, shares_rejected, uptime):
         "shares_rejected": shares_rejected,
         "uptime": uptime,
         "is_mining": is_mining,
-        "is_demo": IS_DEMO
+        "is_demo": IS_DEMO,
+        "job_id": current_job_id,
+        "logs": list(pending_logs)
     }
+    pending_logs.clear()
     
     try:
         req = urllib.request.Request(url)
@@ -317,6 +334,10 @@ def main():
             
             if config:
                 target_threads = config.get("target_threads", current_threads)
+                # Enforce hard ceiling of leaving at least 1 core free and max 7 threads active
+                max_allowed_threads = max(1, min(7, MAX_CORES - 1))
+                if target_threads > max_allowed_threads:
+                    target_threads = max_allowed_threads
                 is_mining_target = config.get("is_mining_target", False)
                 job = config.get("job")
                 difficulty = config.get("difficulty")
@@ -328,23 +349,29 @@ def main():
                     if is_mining:
                         print("🛑 Server requested mining STOP.")
                         stop_local_mining()
+                        current_job_id = None
                 else:
                     # Server wants us to mine
-                    if not is_mining or target_threads != current_threads or (job and config.get("job_changed", False)):
+                    job_id = job.get("jobId") if job else None
+                    job_changed = config.get("job_changed", False) or (job_id != current_job_id)
+                    
+                    if not is_mining or target_threads != current_threads or (job and job_changed):
                         if not IS_DEMO:
                             if job and difficulty and extranonce1:
-                                print(f"⚡ Server requested mining START/UPDATE with {target_threads} threads.")
+                                print(f"⚡ Server requested mining START/UPDATE with {target_threads} threads. (Job changed: {job_changed})")
                                 start_local_mining(job, difficulty, extranonce1, extranonce2_size, target_threads)
                                 current_threads = target_threads
+                                current_job_id = job_id
                             else:
                                 print("⏳ Waiting for valid job from server...")
                         else:
                             if not is_mining:
-                                print(f"🎬 [Demo] Starting simulated mining with {target_threads} threads.")
-                            elif target_threads != current_threads:
-                                print(f"🎬 [Demo] Updating simulated threads: {current_threads} -> {target_threads}")
+                                print(f"🎬 [Demo] Starting simulated mining with {target_threads} threads. (Job changed: {job_changed})")
+                            elif target_threads != current_threads or job_changed:
+                                print(f"🎬 [Demo] Updating simulated threads/job: {current_threads} -> {target_threads}")
                             is_mining = True
                             current_threads = target_threads
+                            current_job_id = job_id
             
             time.sleep(5)
             
