@@ -452,6 +452,7 @@ if (isMainThread) {
   let currentRampLimit = 1;
   let isFirstHealthCheck = true;
   let wasHoldingSteady = false;
+  let coolingMode = false;
 
   function checkSystemHealth() {
     const temp = getCPUTemperature();
@@ -476,12 +477,14 @@ if (isMainThread) {
       // אזהרת החום נמדדת ומתועדת בלוג בלבד ללא התראות קופצות שמציקות למשתמש
       hasAlertedTemp = true;
       wasHoldingSteady = false;
+      coolingMode = true; // Ensure cooling mode is active
     } else {
       // בדיקת אזהרה (חום או עומס)
       let needsCooling = false;
       if (temp && temp >= COOL_DOWN_TEMP) {
         status = 'warning';
         needsCooling = true;
+        coolingMode = true; // Trigger cooling mode
         recommendation = `טמפרטורת המעבד חמה (${temp.toFixed(1)}°C).`;
       }
       if (load > totalCores * 1.3) {
@@ -501,11 +504,14 @@ if (isMainThread) {
         recommendation += ` עוצמת המחשוב הונמכה בהדרגה ל-${targetCores} ליבות.`;
         hasAlertedTemp = false;
       } else {
-        // אין צורך בקירור (טמפרטורה מתחת לתקרת Cooldown ועומס תקין)
-        // מותר להעלות ליבה רק אם הטמפרטורה ירדה מתחת או שווה ל-RESUME_RAMP_TEMP
-        const canRampUp = !temp || temp <= RESUME_RAMP_TEMP;
+        // אין צורך אקטיבי בקירור (טמפרטורה מתחת ל-COOL_DOWN_TEMP ועומס תקין)
+        // אם הטמפרטורה ירדה מתחת ל-RESUME_RAMP_TEMP, יוצאים ממצב קירור
+        if (temp && temp <= RESUME_RAMP_TEMP) {
+          coolingMode = false;
+        }
         
-        if (canRampUp) {
+        // מותר להעלות ליבה רק אם אנחנו לא במצב קירור (coolingMode === false)
+        if (!coolingMode) {
           wasHoldingSteady = false;
           status = 'ok';
           hasAlertedTemp = false;
@@ -519,7 +525,7 @@ if (isMainThread) {
           }
           targetCores = currentRampLimit;
         } else {
-          // אנחנו באזור ההיסטרזיס (החום בין RESUME_RAMP_TEMP ל-COOL_DOWN_TEMP) - שומרים על יציבות
+          // אנחנו במצב קירור, והטמפרטורה היא מעל RESUME_RAMP_TEMP אך מתחת ל-COOL_DOWN_TEMP (אזור ההיסטרזיס)
           status = 'ok';
           hasAlertedTemp = false;
           if (!wasHoldingSteady) {
