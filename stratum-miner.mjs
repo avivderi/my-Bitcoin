@@ -185,6 +185,8 @@ if (isMainThread) {
   const HTTP_PORT = process.env.HTTP_PORT || 3224;
   const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
   const ACK_TIMEOUT_MS = 15000; // 15 seconds acknowledgment timeout
+  const COOL_DOWN_TEMP = parseFloat(process.env.COOL_DOWN_TEMP || '75');
+  const RESUME_RAMP_TEMP = parseFloat(process.env.RESUME_RAMP_TEMP || '68');
 
   let extranonce1 = null;
   let extranonce2Size = 4;
@@ -449,6 +451,7 @@ if (isMainThread) {
   let hasAlertedTemp = false;
   let currentRampLimit = 1;
   let isFirstHealthCheck = true;
+  let wasHoldingSteady = false;
 
   function checkSystemHealth() {
     const temp = getCPUTemperature();
@@ -472,10 +475,11 @@ if (isMainThread) {
       
       // אזהרת החום נמדדת ומתועדת בלוג בלבד ללא התראות קופצות שמציקות למשתמש
       hasAlertedTemp = true;
+      wasHoldingSteady = false;
     } else {
       // בדיקת אזהרה (חום או עומס)
       let needsCooling = false;
-      if (temp && temp >= 75) {
+      if (temp && temp >= COOL_DOWN_TEMP) {
         status = 'warning';
         needsCooling = true;
         recommendation = `טמפרטורת המעבד חמה (${temp.toFixed(1)}°C).`;
@@ -487,6 +491,7 @@ if (isMainThread) {
       }
       
       if (needsCooling) {
+        wasHoldingSteady = false;
         // הנמכה הדרגתית של ליבה אחת
         if (currentRampLimit > 1) {
           currentRampLimit--;
@@ -496,18 +501,34 @@ if (isMainThread) {
         recommendation += ` עוצמת המחשוב הונמכה בהדרגה ל-${targetCores} ליבות.`;
         hasAlertedTemp = false;
       } else {
-        // מצב תקין - עלייה הדרגתית של ליבה אחת
-        status = 'ok';
-        hasAlertedTemp = false;
-        if (currentRampLimit < configuredCores) {
-          if (isFirstHealthCheck) {
-            isFirstHealthCheck = false;
-          } else {
-            currentRampLimit++;
-            console.log(`🐌 הרצה הדרגתית (Ramp-up): מעלה מגבלת ליבות ל-${currentRampLimit}/${configuredCores}`);
+        // אין צורך בקירור (טמפרטורה מתחת לתקרת Cooldown ועומס תקין)
+        // מותר להעלות ליבה רק אם הטמפרטורה ירדה מתחת או שווה ל-RESUME_RAMP_TEMP
+        const canRampUp = !temp || temp <= RESUME_RAMP_TEMP;
+        
+        if (canRampUp) {
+          wasHoldingSteady = false;
+          status = 'ok';
+          hasAlertedTemp = false;
+          if (currentRampLimit < configuredCores) {
+            if (isFirstHealthCheck) {
+              isFirstHealthCheck = false;
+            } else {
+              currentRampLimit++;
+              console.log(`🐌 הרצה הדרגתית (Ramp-up): מעלה מגבלת ליבות ל-${currentRampLimit}/${configuredCores}`);
+            }
           }
+          targetCores = currentRampLimit;
+        } else {
+          // אנחנו באזור ההיסטרזיס (החום בין RESUME_RAMP_TEMP ל-COOL_DOWN_TEMP) - שומרים על יציבות
+          status = 'ok';
+          hasAlertedTemp = false;
+          if (!wasHoldingSteady) {
+            wasHoldingSteady = true;
+            console.log(`ℹ️ מערכת בקרת חום במצב יציב (Holding steady): טמפרטורה ${temp.toFixed(1)}°C היא בטווח ההיסטרזיס (${RESUME_RAMP_TEMP}°C - ${COOL_DOWN_TEMP}°C). שומר על ${currentRampLimit}/${configuredCores} ליבות.`);
+          }
+          targetCores = currentRampLimit;
+          recommendation = `טמפרטורת המעבד מתייצבת (${temp.toFixed(1)}°C). שומר על ${targetCores} ליבות.`;
         }
-        targetCores = currentRampLimit;
       }
     }
     
