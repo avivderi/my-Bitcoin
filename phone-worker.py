@@ -166,7 +166,7 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
                     'job_id': job_id,
                     'extranonce2': extranonce2,
                     'ntime': job['ntime'],
-                    'nonce': struct.pack('<I', nonce).hex()
+                    'nonce': struct.pack('>I', nonce).hex()
                 })
                 # Re-setup
                 extranonce2 = binascii.hexlify(os.urandom(extranonce2_size)).decode()
