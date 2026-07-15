@@ -79,20 +79,45 @@ if (isMainThread) {
   const originalLog = console.log;
   const originalError = console.error;
 
+  // ניקוי קובץ הלוג עם הפעלת השרת מחדש
+  try {
+    fs.writeFileSync('miner.log', '');
+  } catch (e) {
+    originalError('שגיאה בניקוי קובץ הלוג:', e.message);
+  }
+
+  function getLocalTimestamp() {
+    const d = new Date();
+    const pad = (n) => n.toString().padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  function appendToLogFile(message) {
+    try {
+      fs.appendFileSync('miner.log', message + '\n');
+    } catch (e) {
+      originalError('שגיאה בכתיבה לקובץ הלוג:', e.message);
+    }
+  }
+
   console.log = (...args) => {
     const msg = args.join(' ');
-    const timestamp = new Date().toLocaleTimeString();
-    logs.push(`[${timestamp}] ${msg}`);
+    const timestamp = getLocalTimestamp();
+    const logLine = `[${timestamp}] ${msg}`;
+    logs.push(`[${timestamp.split(' ')[1]}] ${msg}`);
     if (logs.length > 50) logs.shift();
     originalLog.apply(console, args);
+    appendToLogFile(logLine);
   };
 
   console.error = (...args) => {
     const msg = args.join(' ');
-    const timestamp = new Date().toLocaleTimeString();
-    logs.push(`[${timestamp}] ❌ ${msg}`);
+    const timestamp = getLocalTimestamp();
+    const logLine = `[${timestamp}] ❌ ${msg}`;
+    logs.push(`[${timestamp.split(' ')[1]}] ❌ ${msg}`);
     if (logs.length > 50) logs.shift();
     originalError.apply(console, args);
+    appendToLogFile(logLine);
   };
 
   function loadEnv() {
@@ -123,8 +148,9 @@ if (isMainThread) {
   let extranonce2Size = 4;
   let currentJob = null;
   let jobVersion = 0;
-  let difficulty = 1;
+  let difficulty = 100000;
   let msgId = 1;
+  const shareQueue = [];
   let sharesFound = 0;
   let sharesAccepted = 0;
   let totalHashesGlobal = 0;
@@ -195,8 +221,6 @@ if (isMainThread) {
             sharesFound++;
             saveStatsSync(); // שמירה מיידית של מציאת ה-Share
             console.log(`🎉 [Worker] Share נמצא! שולח ל-Pool...`);
-            const submitId = msgId;
-            pendingSubmissions.add(submitId);
             send('mining.submit', [
               `${BTC_ADDRESS}.${WORKER_NAME}`,
               msg.jobId,
@@ -243,8 +267,8 @@ if (isMainThread) {
     }
   }
 
-  // אתחול כמות הוורקרים הראשונית
-  adjustWorkers(configuredCores);
+  // אתחול כמות הוורקרים הראשונית - מתחיל מליבה אחת בלבד ועולה בהדרגה
+  adjustWorkers(1);
 
   // הדפסת קצב גיבוב כולל למסך כל שתי שניות (בטרמינל)
   setInterval(() => {
@@ -322,6 +346,8 @@ if (isMainThread) {
   };
 
   let hasAlertedTemp = false;
+  let currentRampLimit = 1;
+  let isFirstHealthCheck = true;
 
   function checkSystemHealth() {
     const temp = getCPUTemperature();
@@ -336,40 +362,56 @@ if (isMainThread) {
     let recommendation = null;
     let targetCores = configuredCores;
     
-    // בדיקת טמפרטורה
-    if (temp) {
-      if (temp >= 85) {
-        status = 'critical';
-        targetCores = 1; // ירידה לליבה אחת במצב קריטי כדי לשמור על המחשב
-        recommendation = `טמפרטורת המעבד קריטית (${temp.toFixed(1)}°C). עוצמת המחשוב הונמכה אוטומטית לליבה אחת כדי למנוע נזק.`;
-        
-        if (!hasAlertedTemp) {
-          hasAlertedTemp = true;
-          exec(`notify-send -u critical "⚠️ אזהרת חום מיינר" "טמפרטורת המעבד הגיעה ל-${temp.toFixed(1)}°C! עוצמת המחשוב הונמכה למינימום."`);
+    // בדיקת מצב קריטי (חירום)
+    if (temp && temp >= 85) {
+      status = 'critical';
+      currentRampLimit = 1;
+      targetCores = 1;
+      recommendation = `טמפרטורת המעבד קריטית (${temp.toFixed(1)}°C). עוצמת המחשוב הונמכה אוטומטית לליבה אחת כדי למנוע נזק.`;
+      
+      if (!hasAlertedTemp) {
+        hasAlertedTemp = true;
+        exec(`notify-send -u critical "⚠️ אזהרת חום מיינר" "טמפרטורת המעבד הגיעה ל-${temp.toFixed(1)}°C! עוצמת המחשוב הונמכה למינימום."`);
+      }
+    } else {
+      // בדיקת אזהרה (חום או עומס)
+      let needsCooling = false;
+      if (temp && temp >= 75) {
+        status = 'warning';
+        needsCooling = true;
+        recommendation = `טמפרטורת המעבד חמה (${temp.toFixed(1)}°C).`;
+      }
+      if (load > totalCores * 1.3) {
+        status = 'warning';
+        needsCooling = true;
+        recommendation = (recommendation ? recommendation + ' ' : '') + `עומס המערכת גבוה (${load.toFixed(1)}).`;
+      }
+      
+      if (needsCooling) {
+        // הנמכה הדרגתית של ליבה אחת
+        if (currentRampLimit > 1) {
+          currentRampLimit--;
+          console.log(`📉 ויסות חום/עומס (Cooldown): מנמיך את מגבלת הליבות ל-${currentRampLimit}/${configuredCores}`);
         }
-      } else if (temp >= 80) {
-        status = 'warning';
-        targetCores = Math.max(1, Math.floor(configuredCores * 0.4)); // 40% מהליבות המוגדרות
-        recommendation = `טמפרטורת המעבד גבוהה (${temp.toFixed(1)}°C). עוצמת המחשוב הונמכה אוטומטית ל-${targetCores} ליבות.`;
-        hasAlertedTemp = false;
-      } else if (temp >= 75) {
-        status = 'warning';
-        targetCores = Math.max(1, Math.floor(configuredCores * 0.7)); // 70% מהליבות המוגדרות
-        recommendation = `טמפרטורת המעבד מתחממת (${temp.toFixed(1)}°C). עוצמת המחשוב הונמכה אוטומטית ל-${targetCores} ליבות.`;
+        targetCores = currentRampLimit;
+        recommendation += ` עוצמת המחשוב הונמכה בהדרגה ל-${targetCores} ליבות.`;
         hasAlertedTemp = false;
       } else {
+        // מצב תקין - עלייה הדרגתית של ליבה אחת
+        status = 'ok';
         hasAlertedTemp = false;
+        if (currentRampLimit < configuredCores) {
+          if (isFirstHealthCheck) {
+            isFirstHealthCheck = false;
+          } else {
+            currentRampLimit++;
+            console.log(`🐌 הרצה הדרגתית (Ramp-up): מעלה מגבלת ליבות ל-${currentRampLimit}/${configuredCores}`);
+          }
+        }
+        targetCores = currentRampLimit;
       }
     }
     
-    // בדיקת עומס מערכת (אם ממוצע העומס עולה על מספר הליבות הכללי פי 1.3)
-    if (status === 'ok' && load > totalCores * 1.3) {
-      status = 'warning';
-      targetCores = Math.max(1, Math.floor(configuredCores * 0.5)); // 50% מהליבות המוגדרות
-      recommendation = `עומס המערכת גבוה מאוד (${load.toFixed(1)}). עוצמת המחשוב הונמכה אוטומטית ל-${targetCores} ליבות כדי להשאיר את המחשב מגיב.`;
-    }
-    
-    // התאמת כמות הוורקרים הפעילים בהתאם ליעד שחושב
     adjustWorkers(targetCores);
     
     systemHealth.status = status;
@@ -741,6 +783,14 @@ if (isMainThread) {
   }
 
   function send(method, params) {
+    if (method === 'mining.submit') {
+      if (!socket || socket.destroyed || !socket.writable) {
+        console.warn(`⚠️ החיבור לשרת מנותק! שומר את ה-Share זמנית בתור לשליחה מחדש...`);
+        shareQueue.push({ method, params });
+        return;
+      }
+      pendingSubmissions.add(msgId);
+    }
     if (!socket || socket.destroyed) return;
     const msg = { id: msgId++, method, params };
     socket.write(JSON.stringify(msg) + '\n');
@@ -748,14 +798,15 @@ if (isMainThread) {
 
   function handleMessage(msg) {
     // בדיקה אם מדובר בתגובה לשליחת Share
-    if (msg.id && pendingSubmissions.has(msg.id)) {
-      pendingSubmissions.delete(msg.id);
-      if (msg.result === true) {
+    if (msg.id && pendingSubmissions.has(Number(msg.id))) {
+      pendingSubmissions.delete(Number(msg.id));
+      console.log(`📡 תגובה מקבלת Share מהבריכה (מזהה ${msg.id}): תוצאה=${JSON.stringify(msg.result)}, שגיאה=${JSON.stringify(msg.error)}`);
+      if (msg.result === true || (msg.result && !msg.error)) {
         sharesAccepted++;
         saveStatsSync(); // שמירה מיידית של ה-Share שהתקבל בהצלחה
-        console.log(`✅ Share התקבל בשרת! (סה"כ Accepted: ${sharesAccepted})`);
-      } else if (msg.error) {
-        console.log(`⚠️ Share נדחה על ידי השרת: ${JSON.stringify(msg.error)}`);
+        console.log(`✅ Share התקבל בשרת בהצלחה! (סה"כ Accepted: ${sharesAccepted})`);
+      } else {
+        console.log(`⚠️ Share נדחה על ידי השרת. שגיאה: ${JSON.stringify(msg.error)}`);
       }
       return;
     }
@@ -765,6 +816,22 @@ if (isMainThread) {
       extranonce2Size = msg.result[2];
       console.log(`📡 נרשם בהצלחה | extranonce1=${extranonce1}`);
       send('mining.authorize', [`${BTC_ADDRESS}.${WORKER_NAME}`, 'x']);
+      return;
+    }
+
+    if (msg.id === 2) {
+      if (msg.result === true) {
+        console.log(`🔐 החיבור לבריכה אושר בהצלחה (Authorized)!`);
+        if (shareQueue.length > 0) {
+          console.log(`📤 שולח ${shareQueue.length} מניות (Shares) שנשמרו בתור בזמן הניתוק...`);
+          while (shareQueue.length > 0) {
+            const item = shareQueue.shift();
+            send(item.method, item.params);
+          }
+        }
+      } else {
+        console.error(`❌ אישור החיבור לבריכה נכשל: ${JSON.stringify(msg.error)}`);
+      }
       return;
     }
 
@@ -821,7 +888,7 @@ if (isMainThread) {
   // ==========================================
 
   let currentJob = null;
-  let difficulty = 1;
+  let difficulty = 100000;
   let extranonce1 = null;
   let extranonce2Size = 4;
   

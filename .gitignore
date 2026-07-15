@@ -4,3 +4,4 @@ stats.json
 stats.json.tmp
 xmrig-miner/
 *.tmp
+*.log
