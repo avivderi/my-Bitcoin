@@ -186,8 +186,8 @@ if (isMainThread) {
   const HTTP_PORT = process.env.HTTP_PORT || 3224;
   const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
   const ACK_TIMEOUT_MS = 15000; // 15 seconds acknowledgment timeout
-  const COOL_DOWN_TEMP = parseFloat(process.env.COOL_DOWN_TEMP || '75');
-  const RESUME_RAMP_TEMP = parseFloat(process.env.RESUME_RAMP_TEMP || '72');
+  const COOL_DOWN_TEMP = parseFloat(process.env.COOL_DOWN_TEMP || '85');
+  const RESUME_RAMP_TEMP = parseFloat(process.env.RESUME_RAMP_TEMP || '80');
 
   let extranonce1 = null;
   let extranonce2Size = 4;
@@ -361,7 +361,7 @@ if (isMainThread) {
       }
     } else {
       const toRemove = workers.length - targetCores;
-      console.log(`📉 מנמיך עוצמת מחשוב עקב חום/עומס: מסיים ${toRemove} ליבות כרייה (סה"כ פעיל: ${targetCores}/${configuredCores})`);
+      console.log(`📉 מנמיך עוצמת מחשוב: מסיים ${toRemove} ליבות כרייה (סה"כ פעיל: ${targetCores}/${configuredCores})`);
       for (let i = 0; i < toRemove; i++) {
         const worker = workers.pop();
         if (worker) {
@@ -478,7 +478,7 @@ if (isMainThread) {
     let targetCores = configuredCores;
     
     // בדיקת מצב קריטי (חירום)
-    if (temp && temp >= 85) {
+    if (temp && temp >= 90) {
       status = 'critical';
       currentRampLimit = 1;
       targetCores = 1;
@@ -508,7 +508,7 @@ if (isMainThread) {
         // הנמכה הדרגתית של ליבה אחת
         if (currentRampLimit > 1) {
           currentRampLimit--;
-          console.log(`📉 ויסות חום/עומס (Cooldown): מנמיך את מגבלת הליבות ל-${currentRampLimit}/${configuredCores}`);
+          console.log(`📉 ויסות חום/עומס (Cooldown): מנמיך את מגבלת הליבות ל-${currentRampLimit}/${configuredCores} (חום: ${temp ? temp.toFixed(1) + '°C' : 'N/A'}, עומס: ${load.toFixed(1)})`);
         }
         targetCores = currentRampLimit;
         recommendation += ` עוצמת המחשוב הונמכה בהדרגה ל-${targetCores} ליבות.`;
@@ -530,7 +530,7 @@ if (isMainThread) {
               isFirstHealthCheck = false;
             } else {
               currentRampLimit++;
-              console.log(`🐌 הרצה הדרגתית (Ramp-up): מעלה מגבלת ליבות ל-${currentRampLimit}/${configuredCores}`);
+              console.log(`🐌 הרצה הדרגתית (Ramp-up): מעלה מגבלת ליבות ל-${currentRampLimit}/${configuredCores} (חום: ${temp ? temp.toFixed(1) + '°C' : 'N/A'}, עומס: ${load.toFixed(1)})`);
             }
           }
           targetCores = currentRampLimit;
