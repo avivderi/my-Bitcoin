@@ -221,6 +221,10 @@ if (isMainThread) {
             sharesFound++;
             saveStatsSync(); // שמירה מיידית של מציאת ה-Share
             console.log(`🎉 [Worker] Share נמצא! שולח ל-Pool...`);
+            
+            // התראת שולחן עבודה על מציאת Share
+            exec(`notify-send -u normal "⛏️ נמצאה מנייה!" "שולח מניית כרייה לבריכת הכרייה..."`);
+
             send('mining.submit', [
               `${BTC_ADDRESS}.${WORKER_NAME}`,
               msg.jobId,
@@ -237,6 +241,10 @@ if (isMainThread) {
               bestDifficultyHash = msg.hash;
               saveStatsSync();
               console.log(`🚀 קושי שיא חדש שנמצא על ידי המעבד: ${bestDifficulty.toFixed(4)} (האש: ${bestDifficultyHash})`);
+              
+              // התראת שולחן עבודה על שיא קושי חדש
+              exec(`notify-send -u normal "🏆 שיא כרייה חדש!" "נמצא האש בקושי שובר שיא של ${bestDifficulty.toFixed(4)}!"`);
+
               workers.forEach(w => w.postMessage({ type: 'best_difficulty', globalBestDifficulty: bestDifficulty }));
             }
           }
@@ -369,10 +377,8 @@ if (isMainThread) {
       targetCores = 1;
       recommendation = `טמפרטורת המעבד קריטית (${temp.toFixed(1)}°C). עוצמת המחשוב הונמכה אוטומטית לליבה אחת כדי למנוע נזק.`;
       
-      if (!hasAlertedTemp) {
-        hasAlertedTemp = true;
-        exec(`notify-send -u critical "⚠️ אזהרת חום מיינר" "טמפרטורת המעבד הגיעה ל-${temp.toFixed(1)}°C! עוצמת המחשוב הונמכה למינימום."`);
-      }
+      // אזהרת החום נמדדת ומתועדת בלוג בלבד ללא התראות קופצות שמציקות למשתמש
+      hasAlertedTemp = true;
     } else {
       // בדיקת אזהרה (חום או עומס)
       let needsCooling = false;
@@ -424,7 +430,7 @@ if (isMainThread) {
   checkSystemHealth(); // initial check
 
   // ===== שרת Web (לוח בקרה אינטרנטי) =====
-  http.createServer((req, res) => {
+  const server = http.createServer((req, res) => {
     if (req.url === '/stats') {
       const uptimeSec = Math.floor((Date.now() - appStartTime) / 1000);
       const totalKHs = workers.reduce((sum, w) => sum + (w.hashrateKHs || 0), 0);
@@ -805,8 +811,14 @@ if (isMainThread) {
         sharesAccepted++;
         saveStatsSync(); // שמירה מיידית של ה-Share שהתקבל בהצלחה
         console.log(`✅ Share התקבל בשרת בהצלחה! (סה"כ Accepted: ${sharesAccepted})`);
+        
+        // התראת שולחן עבודה על מנייה שאושרה
+        exec(`notify-send -u normal "✅ מנייה אושרה!" "הבריכה קיבלה ואישרה את מניית הכרייה שלך!"`);
       } else {
         console.log(`⚠️ Share נדחה על ידי השרת. שגיאה: ${JSON.stringify(msg.error)}`);
+        
+        // התראת שולחן עבודה על מנייה שנדחתה
+        exec(`notify-send -u normal "⚠️ מנייה נדחתה" "שרת הכרייה דחה את המנייה ששלחת."`);
       }
       return;
     }
@@ -876,11 +888,21 @@ if (isMainThread) {
     saveStatsSync();
     if (socket) socket.end();
     workers.forEach(w => w.terminate());
-    process.exit(0);
+    try {
+      server.close(() => {
+        process.exit(0);
+      });
+    } catch (e) {
+      process.exit(0);
+    }
+    setTimeout(() => {
+      process.exit(0);
+    }, 1000);
   }
 
   process.on('SIGINT', handleExit);
   process.on('SIGTERM', handleExit);
+
 
 } else {
   // ==========================================

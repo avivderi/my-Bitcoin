@@ -1,0 +1,10 @@
+{
+  "uptime_seconds": 14,
+  "shares_found": 10,
+  "shares_accepted": 6,
+  "hashrate_khs": 262.9,
+  "total_hashes": 9700000,
+  "difficulty": 0.5,
+  "best_difficulty": 0.001238548455498038,
+  "best_difficulty_hash": "00000327626a22374f6bb453cf28a643587cef082b20ed14931eadba5c1245a3"
+}
