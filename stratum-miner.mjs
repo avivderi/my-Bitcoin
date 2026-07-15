@@ -49,10 +49,9 @@ function packUInt32LE(hexOrNum) {
 }
 
 function buildMerkleRoot(coinbaseHash, merkleBranch) {
-  let root = Buffer.from(coinbaseHash).reverse();
+  let root = coinbaseHash;
   for (const branch of merkleBranch) {
-    const branchLE = swapEndianWords(branch);
-    root = Buffer.from(doubleSha256(Buffer.concat([root, branchLE]))).reverse();
+    root = doubleSha256(Buffer.concat([root, Buffer.from(branch, 'hex')]));
   }
   return root;
 }
@@ -2120,7 +2119,8 @@ if (isMainThread) {
     
     const coinbaseHex = currentJob.coinb1 + extranonce1 + extranonce2 + currentJob.coinb2;
     const coinbaseHash = doubleSha256(Buffer.from(coinbaseHex, 'hex'));
-    const merkleRootBuf = buildMerkleRoot(coinbaseHash, merkleBranch);
+    const merkleRootBE = buildMerkleRoot(coinbaseHash, merkleBranch);
+    const merkleRootBuf = Buffer.from(merkleRootBE).reverse();
     
     headerPrefixBuf = Buffer.concat([versionBuf, prevHashBuf, merkleRootBuf, ntimeBuf, nbitsBuf]);
     headerPrefixBuf.copy(headerBuf, 0, 0, 76);

@@ -142,15 +142,14 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
         coinbase_hex = job['coinb1'] + extranonce1 + extranonce2 + job['coinb2']
         coinbase_hash = hashlib.sha256(hashlib.sha256(binascii.unhexlify(coinbase_hex)).digest()).digest()
         
-        # Start Merkle root calculation in little-endian
-        root = coinbase_hash[::-1]
+        # Start Merkle root calculation in big-endian
+        root = coinbase_hash
         for branch in merkle_branch:
-            # Swap branch to little-endian bytes using swap_endian_words
-            branch_le = binascii.unhexlify(swap_endian_words(branch))
-            combined = root + branch_le
-            root = hashlib.sha256(hashlib.sha256(combined).digest()).digest()[::-1]
+            combined = root + binascii.unhexlify(branch)
+            root = hashlib.sha256(hashlib.sha256(combined).digest()).digest()
             
-        header_prefix = version + prev_hash + root + ntime + nbits
+        merkle_root_le = root[::-1]
+        header_prefix = version + prev_hash + merkle_root_le + ntime + nbits
         
         nonce = start_nonce
         hashes = 0
@@ -177,12 +176,12 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
                 })
                 coinbase_hex = job['coinb1'] + extranonce1 + extranonce2 + job['coinb2']
                 coinbase_hash = hashlib.sha256(hashlib.sha256(binascii.unhexlify(coinbase_hex)).digest()).digest()
-                root = coinbase_hash[::-1]
+                root = coinbase_hash
                 for branch in merkle_branch:
-                    branch_le = binascii.unhexlify(swap_endian_words(branch))
-                    combined = root + branch_le
-                    root = hashlib.sha256(hashlib.sha256(combined).digest()).digest()[::-1]
-                header_prefix = version + prev_hash + root + ntime + nbits
+                    combined = root + binascii.unhexlify(branch)
+                    root = hashlib.sha256(hashlib.sha256(combined).digest()).digest()
+                merkle_root_le = root[::-1]
+                header_prefix = version + prev_hash + merkle_root_le + ntime + nbits
                 
             nonce = (nonce + 1) & 0xffffffff
             hashes += 1
