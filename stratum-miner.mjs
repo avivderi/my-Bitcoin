@@ -2147,7 +2147,9 @@ if (isMainThread) {
       }
       
       if (hashValue <= shareTarget) {
+        // Reverted: Stratum v1 strictly expects the nonce hex string to be little-endian format.
         const nonceHex = packUInt32LE(nonce).toString('hex');
+        
         parentPort.postMessage({
           type: 'share',
           jobId: currentJob.jobId,

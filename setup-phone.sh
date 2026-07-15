@@ -29,21 +29,27 @@ if [ -f .env ]; then
     if [ ! -z "$ENV_PORT" ]; then
         PORT="$ENV_PORT"
     fi
+    ENV_IP=$(grep -E "^MASTER_IP=" .env | cut -d'=' -f2 | tr -d '\r' | tr -d '"')
 else
     echo -e "${YELLOW}[!] קובץ .env לא נמצא. נשתמש בהגדרות ברירת מחדל.${NC}"
 fi
 
 # 2. זיהוי כתובת ה-IP של המחשב ברשת המקומית
-IP_DETECTED=$(ip route get 1 2>/dev/null | awk '{print $(NF-2);exit}')
-if [ -z "$IP_DETECTED" ]; then
-    IP_DETECTED=$(hostname -I 2>/dev/null | awk '{print $1}')
-fi
-if [ -z "$IP_DETECTED" ]; then
-    IP_DETECTED="192.168.1.100"
+if [ ! -z "$ENV_IP" ]; then
+    IP_DETECTED="$ENV_IP"
+    echo -e "${GREEN}[+] כתובת ה-IP נטענה אוטומטית מקובץ ה-.env:${NC} $IP_DETECTED"
+else
+    IP_DETECTED=$(ip route get 1 2>/dev/null | awk '{print $(NF-2);exit}')
+    if [ -z "$IP_DETECTED" ]; then
+        IP_DETECTED=$(hostname -I 2>/dev/null | awk '{print $1}')
+    fi
+    if [ -z "$IP_DETECTED" ]; then
+        IP_DETECTED="192.168.1.100"
+    fi
+    echo -e "${GREEN}[+] כתובת ה-IP של המחשב שזוהתה ברשת המקומית:${NC} $IP_DETECTED"
 fi
 
-echo -e "${GREEN}[+] כתובת ה-IP של המחשב שזוהתה ברשת:${NC} $IP_DETECTED"
-read -p "הקש Enter לאישור או הקלד כתובת IP אחרת של המחשב: " user_ip
+read -p "הקש Enter לאישור ה-IP או הקלד כתובת אחרת: " user_ip
 if [ ! -z "$user_ip" ]; then
     IP_DETECTED="$user_ip"
 fi
@@ -111,6 +117,35 @@ echo -e "${YELLOW}[*] מעורר את מסך הטלפון...${NC}"
 adb -s "$device_id" shell input keyevent 224
 echo -e "${YELLOW}[!] שים לב: ודא שמסך הטלפון פתוח לחלוטין (UNLOCKED) כדי שההתקנה תעבור בהצלחה.${NC}"
 sleep 1.5
+
+# 6.5 התקנת Tailscale במידת הצורך
+echo ""
+echo -e "${YELLOW}🌍 האם תרצה להגדיר חיבור מרחוק (Tailscale) לפלאפון הזה?${NC}"
+echo -e "זה יאפשר לפלאפון לכרות מכל מקום בעולם (4G או Wi-Fi מחוץ לבית)."
+read -p "הקש y להגדרת Tailscale עכשיו, או כל מקש אחר כדי לדלג: " setup_tailscale
+
+if [ "$setup_tailscale" = "y" ] || [ "$setup_tailscale" = "Y" ]; then
+    echo -e "${YELLOW}[*] פותח את עמוד ההורדה של Tailscale בחנות האפליקציות בפלאפון...${NC}"
+    # הפקודה הזו תפתח אוטומטית את Google Play ישירות בעמוד של Tailscale
+    adb -s "$device_id" shell am start -a android.intent.action.VIEW -d "market://details?id=com.tailscale.ipn"
+    
+    echo -e "${GREEN}👉 הבט במסך הפלאפון! עקוב אחר 3 שלבים פשוטים:${NC}"
+    echo -e "1. התקן את אפליקציית Tailscale מהחנות שכרגע נפתחה לך."
+    echo -e "2. פתח אותה והתחבר עם אותו חשבון Google של המחשב."
+    echo -e "3. הפעל את המתג ל-Active ואשר את בקשת ה-VPN."
+    echo ""
+    read -p "הקש Enter כשתסיים להגדיר את Tailscale בפלאפון..."
+    
+    echo -e "${GREEN}[+] מצוין!${NC} כעת תצטרך להזין את כתובת ה-Tailscale של המחשב (מתחילה ב-100...)."
+    read -p "הקלד את ה-IP של Tailscale (הקש Enter כדי להשתמש ב-$IP_DETECTED): " tailscale_ip
+    if [ ! -z "$tailscale_ip" ]; then
+        IP_DETECTED="$tailscale_ip"
+        echo -e "${GREEN}[+] ה-IP עודכן ל-${IP_DETECTED}${NC}"
+    else
+        echo -e "${GREEN}[+] נשאר עם הכתובת הנוכחית: $IP_DETECTED${NC}"
+    fi
+fi
+echo ""
 
 # 7. בדיקה והתקנה של Termux
 echo -e "${YELLOW}[*] בודק אם אפליקציית Termux מותקנת בטלפון...${NC}"
