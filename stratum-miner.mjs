@@ -272,6 +272,24 @@ if (isMainThread) {
 
   let activeCoresTarget = 1;
 
+  function getCombinedCoresText(localActive) {
+    let remoteActive = 0;
+    let remoteConfigured = 0;
+    for (const worker of remoteWorkers.values()) {
+      const isDemoWorker = worker.name.includes('-demo');
+      if (isDemoWorker === (typeof demoModeActive !== 'undefined' ? demoModeActive : false)) {
+        const isOnline = (Date.now() - worker.last_seen) < 15000;
+        if (isOnline && worker.is_mining) {
+          remoteActive += worker.threads || 0;
+          remoteConfigured += worker.max_cores || 8;
+        }
+      }
+    }
+    const combinedActive = localActive + remoteActive;
+    const combinedConfigured = (typeof configuredCores !== 'undefined' ? configuredCores : 12) + remoteConfigured;
+    return `סה"כ פעיל בחווה: ${combinedActive}/${combinedConfigured}, מקומי: ${localActive}/${typeof configuredCores !== 'undefined' ? configuredCores : 12}`;
+  }
+
   // פונקציה לניהול דינמי של כמות הוורקרים הפעילים בהתאם לעומס וטמפרטורה
   function adjustWorkers(targetCores) {
     activeCoresTarget = targetCores;
@@ -279,7 +297,7 @@ if (isMainThread) {
 
     if (workers.length < targetCores) {
       const toAdd = targetCores - workers.length;
-      console.log(`📈 מעלה עוצמת מחשוב: מוסיף ${toAdd} ליבות כרייה (סה"כ פעיל: ${targetCores}/${configuredCores})`);
+      console.log(`📈 מעלה עוצמת מחשוב: מוסיף ${toAdd} ליבות כרייה (${getCombinedCoresText(targetCores)})`);
       for (let i = 0; i < toAdd; i++) {
         const worker = new Worker(fileURLToPath(import.meta.url));
         worker.hashrateKHs = 0;
@@ -362,7 +380,7 @@ if (isMainThread) {
       }
     } else {
       const toRemove = workers.length - targetCores;
-      console.log(`📉 מנמיך עוצמת מחשוב: מסיים ${toRemove} ליבות כרייה (סה"כ פעיל: ${targetCores}/${configuredCores})`);
+      console.log(`📉 מנמיך עוצמת מחשוב: מסיים ${toRemove} ליבות כרייה (${getCombinedCoresText(targetCores)})`);
       for (let i = 0; i < toRemove; i++) {
         const worker = workers.pop();
         if (worker) {
@@ -522,7 +540,7 @@ if (isMainThread) {
         // הנמכה הדרגתית של ליבה אחת
         if (currentRampLimit > 1) {
           currentRampLimit--;
-          console.log(`📉 ויסות חום/עומס (Cooldown): מנמיך את מגבלת הליבות ל-${currentRampLimit}/${configuredCores} (חום: ${temp ? temp.toFixed(1) + '°C' : 'N/A'}, עומס: ${load.toFixed(1)})`);
+          console.log(`📉 ויסות חום/עומס (Cooldown): מנמיך את מגבלת הליבות ל-${currentRampLimit}/${configuredCores} (${getCombinedCoresText(currentRampLimit)}) (חום: ${temp ? temp.toFixed(1) + '°C' : 'N/A'}, עומס: ${load.toFixed(1)})`);
         }
         targetCores = currentRampLimit;
         recommendation += ` עוצמת המחשוב הונמכה בהדרגה ל-${targetCores} ליבות.`;
@@ -544,7 +562,7 @@ if (isMainThread) {
               isFirstHealthCheck = false;
             } else {
               currentRampLimit++;
-              console.log(`🐌 הרצה הדרגתית (Ramp-up): מעלה מגבלת ליבות ל-${currentRampLimit}/${configuredCores} (חום: ${temp ? temp.toFixed(1) + '°C' : 'N/A'}, עומס: ${load.toFixed(1)})`);
+              console.log(`🐌 הרצה הדרגתית (Ramp-up): מעלה מגבלת ליבות ל-${currentRampLimit}/${configuredCores} (${getCombinedCoresText(currentRampLimit)}) (חום: ${temp ? temp.toFixed(1) + '°C' : 'N/A'}, עומס: ${load.toFixed(1)})`);
             }
           }
           targetCores = currentRampLimit;
@@ -554,7 +572,7 @@ if (isMainThread) {
           hasAlertedTemp = false;
           if (!wasHoldingSteady) {
             wasHoldingSteady = true;
-            console.log(`ℹ️ מערכת בקרת חום במצב יציב (Holding steady): טמפרטורה ${temp.toFixed(1)}°C היא בטווח ההיסטרזיס (${RESUME_RAMP_TEMP}°C - ${COOL_DOWN_TEMP}°C). שומר על ${currentRampLimit}/${configuredCores} ליבות.`);
+            console.log(`ℹ️ מערכת בקרת חום במצב יציב (Holding steady): טמפרטורה ${temp.toFixed(1)}°C היא בטווח ההיסטרזיס (${RESUME_RAMP_TEMP}°C - ${COOL_DOWN_TEMP}°C). שומר על ${currentRampLimit}/${configuredCores} ליבות (${getCombinedCoresText(currentRampLimit)}).`);
           }
           targetCores = currentRampLimit;
           recommendation = `טמפרטורת המעבד מתייצבת (${temp.toFixed(1)}°C). שומר על ${targetCores} ליבות.`;
