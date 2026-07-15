@@ -17,18 +17,21 @@ MASTER_PORT = 3224           # Bitcoin Miner Control Server Port
 WORKER_NAME = "redmi-1"      # Unique name for this phone
 MAX_CORES = 8                # Redmi 13C has 8 cores
 DEFAULT_THREADS = 4          # Start with 4 threads for safety
+DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "")  # Secret token to authenticate with Master Server
 
 # Check for demo mode command line argument
 IS_DEMO = "--demo" in sys.argv
 
-# Parse command line overrides for Name and IP
+# Parse command line overrides for Name, IP, and Token
 # Can be set via positional args: python phone-worker.py [name] [ip]
-# Or via named flags: python phone-worker.py --name=redmi-1 --ip=192.168.1.50
+# Or via named flags: python phone-worker.py --name=redmi-1 --ip=192.168.1.50 --token=xxx
 for arg in sys.argv:
     if arg.startswith("--name="):
         WORKER_NAME = arg.split("=")[1]
     elif arg.startswith("--ip="):
         MASTER_IP = arg.split("=")[1]
+    elif arg.startswith("--token="):
+        DASHBOARD_TOKEN = arg.split("=")[1]
 
 positional_args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
 if len(positional_args) >= 1:
@@ -236,6 +239,8 @@ def submit_share(job_id, extranonce2, ntime, nonce):
     try:
         req = urllib.request.Request(url)
         req.add_header('Content-Type', 'application/json')
+        if DASHBOARD_TOKEN:
+            req.add_header('X-Auth-Token', DASHBOARD_TOKEN)
         data = json.dumps(payload).encode('utf-8')
         with urllib.request.urlopen(req, data=data, timeout=3) as response:
             print(f"🎉 Share submitted successfully to master server! nonce={nonce}")
@@ -261,6 +266,8 @@ def send_heartbeat(temp, hashrate, shares_accepted, shares_rejected, uptime):
     try:
         req = urllib.request.Request(url)
         req.add_header('Content-Type', 'application/json')
+        if DASHBOARD_TOKEN:
+            req.add_header('X-Auth-Token', DASHBOARD_TOKEN)
         data = json.dumps(payload).encode('utf-8')
         
         with urllib.request.urlopen(req, data=data, timeout=2) as response:

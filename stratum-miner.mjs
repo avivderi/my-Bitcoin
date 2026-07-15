@@ -158,11 +158,32 @@ if (isMainThread) {
   }
   loadEnv();
 
+  // יצירת טוקן אבטחה אם אינו קיים
+  let token = process.env.DASHBOARD_TOKEN;
+  if (!token) {
+    token = crypto.randomBytes(16).toString('hex');
+    process.env.DASHBOARD_TOKEN = token;
+    try {
+      let envContent = '';
+      if (fs.existsSync('.env')) {
+        envContent = fs.readFileSync('.env', 'utf8');
+      }
+      if (!envContent.includes('DASHBOARD_TOKEN=')) {
+        const newline = envContent.endsWith('\n') || envContent.endsWith('\r') ? '' : '\n';
+        fs.appendFileSync('.env', `${newline}DASHBOARD_TOKEN=${token}\n`, 'utf8');
+        console.log(`🔑 נוצר טוקן אבטחה חדש ונשמר ב-.env: ${token}`);
+      }
+    } catch (err) {
+      console.error('שגיאה בכתיבת DASHBOARD_TOKEN ל-.env:', err.message);
+    }
+  }
+
   const POOL_HOST = process.env.POOL_HOST || 'public-pool.io';
   const POOL_PORT = parseInt(process.env.POOL_PORT || '3333', 10);
   const BTC_ADDRESS = process.env.BTC_ADDRESS || 'bc1qXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
   const WORKER_NAME = process.env.WORKER_NAME || 'nodejs-worker';
   const HTTP_PORT = process.env.HTTP_PORT || 3224;
+  const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
 
   let extranonce1 = null;
   let extranonce2Size = 4;
@@ -473,6 +494,13 @@ if (isMainThread) {
   // ===== שרת Web (לוח בקרה אינטרנטי) =====
   const server = http.createServer((req, res) => {
     if (req.method === 'POST') {
+      const authToken = req.headers['x-auth-token'];
+      if (!authToken || authToken !== process.env.DASHBOARD_TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized: Invalid or missing token' }));
+        return;
+      }
+
       let body = '';
       req.on('data', chunk => {
         body += chunk.toString();
@@ -615,6 +643,26 @@ if (isMainThread) {
             return;
           }
 
+          if (req.url === '/api/stats/reset') {
+            sharesFound = 0;
+            sharesAccepted = 0;
+            totalHashesGlobal = 0;
+            bestDifficulty = 0;
+            bestDifficultyHash = '';
+            
+            // איפוס נתוני דמו אם קיימים
+            demoSharesFound = 0;
+            demoSharesAccepted = 0;
+            demoLogs.length = 0;
+            
+            saveStatsSync();
+            console.log('🔄 נתוני הכרייה והסטטיסטיקות אופסו בהצלחה מלוח הבקרה.');
+            
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok' }));
+            return;
+          }
+
           res.writeHead(400);
           res.end('Bad Request');
         } catch (e) {
@@ -735,13 +783,13 @@ if (isMainThread) {
         demo_mode_active: demoModeActive,
         remote_workers: Array.from(remoteWorkers.values())
       };
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(stats));
       return;
     }
 
     if (req.url === '/stop') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, message: 'Miner stopping...' }));
       console.log('🛑 התקבלה פקודת עצירה מרחוק מלוח הבקרה. מכבה את המיינר...');
       setTimeout(() => {
@@ -755,6 +803,9 @@ if (isMainThread) {
       res.end(`<!DOCTYPE html>
 <html dir="rtl" lang="he">
 <head>
+  <script>
+    const DASHBOARD_TOKEN = "${process.env.DASHBOARD_TOKEN || ''}";
+  </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>לוח בקרה מבוזר - כריית ביטקוין סולו</title>
@@ -1258,6 +1309,9 @@ if (isMainThread) {
             <button id="toggleDemoBtn" class="btn btn-secondary" onclick="toggleDemoMode()">
               🔌 כניסה למצב דמו
             </button>
+            <button class="btn btn-secondary" onclick="resetStats()">
+              🔄 איפוס סטטיסטיקות
+            </button>
             <button class="btn btn-danger" onclick="stopMiner()">
               🛑 עצור כרייה
             </button>
@@ -1295,10 +1349,39 @@ if (isMainThread) {
         }
       }
     }
+
+    async function resetStats() {
+      if (confirm('האם אתה בטוח שברצונך לאפס את כל הסטטיסטיקות והמונים של הכרייה? (פעולה זו תמחק גם את הנתונים שנשמרו ב-stats.json)')) {
+        try {
+          const res = await fetch('/api/stats/reset', {
+            method: 'POST',
+            headers: {
+              'X-Auth-Token': DASHBOARD_TOKEN,
+              'Content-Type': 'application/json'
+            }
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            alert('הסטטיסטיקות אופסו בהצלחה!');
+            fetchStats();
+          } else {
+            alert('שגיאה באיפוס הסטטיסטיקות.');
+          }
+        } catch(e) {
+          alert('שגיאה בתקשורת עם השרת: ' + e.message);
+        }
+      }
+    }
     
     async function togglePhoneMining() {
       try {
-        const res = await fetch('/api/workers/toggle', { method: 'POST' });
+        const res = await fetch('/api/workers/toggle', {
+          method: 'POST',
+          headers: {
+            'X-Auth-Token': DASHBOARD_TOKEN,
+            'Content-Type': 'application/json'
+          }
+        });
         const data = await res.json();
         updatePhoneMiningBtn(data.phones_mining_enabled);
       } catch (e) {
@@ -1308,7 +1391,13 @@ if (isMainThread) {
     
     async function toggleDemoMode() {
       try {
-        const res = await fetch('/api/demo/toggle', { method: 'POST' });
+        const res = await fetch('/api/demo/toggle', {
+          method: 'POST',
+          headers: {
+            'X-Auth-Token': DASHBOARD_TOKEN,
+            'Content-Type': 'application/json'
+          }
+        });
         const data = await res.json();
         updateDemoUI(data.demo_active);
       } catch (e) {
@@ -1496,8 +1585,9 @@ if (isMainThread) {
     
     res.writeHead(404);
     res.end('Not Found');
-  }).listen(HTTP_PORT, () => {
-    console.log(`🌐 לוח בקרה אינטרנטי זמין בכתובת: http://localhost:${HTTP_PORT}`);
+  }).listen(HTTP_PORT, BIND_HOST, () => {
+    console.log(`🌐 לוח בקרה אינטרנטי זמין בכתובת: http://${BIND_HOST}:${HTTP_PORT}`);
+    console.log(`🔑 טוקן אבטחה (DASHBOARD_TOKEN): ${process.env.DASHBOARD_TOKEN}`);
   });
 
 
@@ -1548,6 +1638,7 @@ if (isMainThread) {
     isReconnecting = true;
     console.log(`⏳ מנסה להתחבר מחדש בעוד ${reconnectWait / 1000} שניות...`);
     setTimeout(() => {
+      isReconnecting = false;
       connectToPool();
     }, reconnectWait);
     reconnectWait = Math.min(reconnectWait * 2, 30000);
