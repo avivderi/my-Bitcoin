@@ -85,11 +85,13 @@ if (isMainThread) {
   const originalLog = console.log;
   const originalError = console.error;
 
-  // ניקוי קובץ הלוג עם הפעלת השרת מחדש
+  // ניקוי קבצי הלוג עם הפעלת השרת מחדש
   try {
-    fs.writeFileSync('miner.log', '');
+    fs.writeFileSync('workers.log', '');
+    fs.writeFileSync('system.log', '');
+    fs.writeFileSync('mining.log', '');
   } catch (e) {
-    originalError('שגיאה בניקוי קובץ הלוג:', e.message);
+    originalError('שגיאה בניקוי קבצי הלוג:', e.message);
   }
 
   function getLocalTimestamp() {
@@ -98,18 +100,116 @@ if (isMainThread) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   }
 
-  function appendToLogFile(message) {
+  function isStartupMessage(msg) {
+    return msg.includes('📊 נתונים קודמים נטענו מ-stats.json') ||
+           (msg.includes('💻 נמצאו') && msg.includes('ליבות') && msg.includes('מערכת Multi-threading מאותחלת')) ||
+           (msg.includes('📈 מעלה עוצמת מחשוב') && msg.includes('סה"כ פעיל בחווה: 1/')) ||
+           msg.includes('🌐 לוח בקרה אינטרנטי זמין בכתובת') ||
+           msg.includes('🔑 טוקן אבטחה') ||
+           msg.includes('נוצר טוקן אבטחה חדש') ||
+           msg.includes('✅ מחובר ל-') ||
+           msg.includes('📡 נרשם בהצלחה | extranonce1=') ||
+           msg.includes('🔐 החיבור לבריכה אושר בהצלחה');
+  }
+
+  function classifyLogMessage(msg) {
+    if (isStartupMessage(msg)) {
+      return ['workers', 'system', 'mining'];
+    }
+
+    // File 1: Workers (וורקרים וקצב כרייה)
+    const isWorker =
+      msg.includes('[Worker') ||
+      msg.includes('Worker Thread') ||
+      msg.includes('Remote worker') ||
+      msg.includes('ליבת כרייה מקומית') ||
+      msg.includes('ליבת כרייה קרסה') ||
+      msg.includes('ליבת כרייה נסגרה') ||
+      msg.includes('קצב כרייה') ||
+      msg.includes('קצב גיבוב') ||
+      msg.includes('גיבוב כולל');
+
+    // File 2: Quality control (בקרת איכות - טמפרטורה, עומס, ליבות, השהיה/הפעלה יזומה)
+    const isSystem =
+      msg.includes('עוצמת מחשוב') ||
+      msg.includes('ויסות חום') ||
+      msg.includes('הרצה הדרגתית') ||
+      msg.includes('בקרת חום') ||
+      msg.includes('Thermal limit') ||
+      msg.includes('Thermal safety') ||
+      msg.includes('טמפרטורת המעבד') ||
+      msg.includes('עומס המערכת') ||
+      msg.includes('הושהתה באופן יזום') ||
+      msg.includes('חודשה. ליבות') ||
+      msg.includes('מגבלת הליבות');
+
+    // File 3: Mining success & pool communication (הצלחות כרייה, שליחה לבריכה, stratum)
+    const isMining =
+      msg.includes('Share') ||
+      msg.includes('מנייה') ||
+      msg.includes('מניות') ||
+      msg.includes('תגובה מקבלת Share') ||
+      msg.includes('קושי חדש') ||
+      msg.includes('שיא כרייה חדש') ||
+      msg.includes('קושי שיא חדש') ||
+      msg.includes('שולח ל-Pool') ||
+      msg.includes('החיבור נסגר') ||
+      msg.includes('מנסה להתחבר מחדש') ||
+      msg.includes('שוחזרו') ||
+      msg.includes('שיתופים') ||
+      msg.includes('Socket') ||
+      msg.includes('התקבל בשרת בהצלחה');
+
+    const categories = [];
+    if (isWorker) categories.push('workers');
+    if (isSystem) categories.push('system');
+    if (isMining) categories.push('mining');
+
+    // Default to workers if no category is matched
+    if (categories.length === 0) {
+      categories.push('workers');
+    }
+    return categories;
+  }
+
+  let hasWrittenStartupPrefix = false;
+
+  function appendToSplitLogs(msg, timestamp, isError = false) {
     try {
-      fs.appendFileSync('miner.log', message + '\n');
+      const categories = classifyLogMessage(msg);
+      const isStartup = isStartupMessage(msg);
+      
+      let prefix = '';
+      if (isStartup && !hasWrittenStartupPrefix) {
+        prefix = '----';
+        hasWrittenStartupPrefix = true;
+      }
+      
+      const emojiPrefix = isError ? '❌ ' : '';
+      const logLine = `${prefix}[${timestamp}] ${emojiPrefix}${msg}`;
+
+      categories.forEach(cat => {
+        fs.appendFileSync(`${cat}.log`, logLine + '\n');
+      });
+
+      // If authorized, write the custom appropriate message
+      if (msg.includes('🔐 החיבור לבריכה אושר בהצלחה') || msg.includes('Authorized')) {
+        try {
+          fs.appendFileSync('workers.log', ' ++++ מעקב וורקרים: פירוט ביצועי ליבות וחיבורי סמארטפונים\n');
+          fs.appendFileSync('system.log', ' ++++ בקרת איכות: ניהול משאבים, טמפרטורה וויסות ליבות\n');
+          fs.appendFileSync('mining.log', ' ++++ הצלחות כרייה: מציאת שיתופים (Shares) וחיבור לבריכה (Stratum)\n');
+        } catch (innerErr) {
+          originalError('שגיאה בכתיבת הודעות התאמה לעמודים:', innerErr.message);
+        }
+      }
     } catch (e) {
-      originalError('שגיאה בכתיבה לקובץ הלוג:', e.message);
+      originalError('שגיאה בכתיבה לקבצי הלוג המפוצלים:', e.message);
     }
   }
 
   console.log = (...args) => {
     const msg = args.join(' ');
     const timestamp = getLocalTimestamp();
-    const logLine = `[${timestamp}] ${msg}`;
     const isDemoLog = msg.includes('🎬') || msg.includes('Demo') || msg.includes('demo') || (typeof demoModeActive !== 'undefined' && demoModeActive);
     
     if (isDemoLog) {
@@ -120,14 +220,13 @@ if (isMainThread) {
       logs.push(`[${timestamp.split(' ')[1]}] ${msg}`);
       if (logs.length > 50) logs.shift();
       originalLog.apply(console, args);
-      appendToLogFile(logLine);
+      appendToSplitLogs(msg, timestamp, false);
     }
   };
 
   console.error = (...args) => {
     const msg = args.join(' ');
     const timestamp = getLocalTimestamp();
-    const logLine = `[${timestamp}] ❌ ${msg}`;
     const isDemoLog = msg.includes('🎬') || msg.includes('Demo') || msg.includes('demo') || (typeof demoModeActive !== 'undefined' && demoModeActive);
     
     if (isDemoLog) {
@@ -138,7 +237,7 @@ if (isMainThread) {
       logs.push(`[${timestamp.split(' ')[1]}] ❌ ${msg}`);
       if (logs.length > 50) logs.shift();
       originalError.apply(console, args);
-      appendToLogFile(logLine);
+      appendToSplitLogs(msg, timestamp, true);
     }
   };
 
