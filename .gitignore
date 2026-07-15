@@ -2,6 +2,9 @@
 node_modules/
 stats.json
 stats.json.tmp
+pending-shares.json
+pending-shares.json.tmp
 xmrig-miner/
 *.tmp
 *.log
+
