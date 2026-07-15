@@ -79,6 +79,7 @@ if (isMainThread) {
   const demoLogs = [];
   let phonesMiningEnabled = true;
   let demoModeActive = false;
+  let miningPaused = false;
   const remoteWorkers = new Map();
   const originalLog = console.log;
   const originalError = console.error;
@@ -463,6 +464,14 @@ if (isMainThread) {
     systemHealth.load = parseFloat(load.toFixed(1));
     systemHealth.configuredCores = configuredCores;
     
+    if (miningPaused) {
+      systemHealth.status = 'paused';
+      systemHealth.recommendation = 'הכרייה מושהית זמנית על ידי המשתמש (מצב קירור).';
+      systemHealth.activeCores = 0;
+      adjustWorkers(0);
+      return;
+    }
+    
     let status = 'ok';
     let recommendation = null;
     let targetCores = configuredCores;
@@ -658,8 +667,8 @@ if (isMainThread) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
               status: 'ok',
-              target_threads: targetThreads,
-              is_mining_target: phonesMiningEnabled,
+              target_threads: miningPaused ? 0 : targetThreads,
+              is_mining_target: phonesMiningEnabled && !miningPaused,
               job: currentJob,
               difficulty: difficulty,
               extranonce1: extranonce1,
@@ -727,6 +736,21 @@ if (isMainThread) {
             console.log(`⚡ Toggled server demo mode status to: ${demoModeActive ? 'ON' : 'OFF'}`);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ status: 'ok', demo_active: demoModeActive }));
+            return;
+          }
+
+          if (req.url === '/api/mining/toggle') {
+            miningPaused = !miningPaused;
+            if (miningPaused) {
+              console.log('⏸️ כריית הביטקוין הושהתה באופן יזום. הליבות נסגרות...');
+              adjustWorkers(0);
+            } else {
+              console.log('▶️ כריית הביטקוין חודשה. ליבות הכרייה מופעלות מחדש...');
+              coolingMode = false;
+              checkSystemHealth();
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok', mining_paused: miningPaused }));
             return;
           }
 
@@ -868,6 +892,7 @@ if (isMainThread) {
         wallet_address: BTC_ADDRESS,
         phones_mining_enabled: phonesMiningEnabled,
         demo_mode_active: demoModeActive,
+        mining_paused: miningPaused,
         remote_workers: Array.from(remoteWorkers.values()),
         pending_shares_count: shareQueue.length + pendingSubmissions.size
       };
@@ -1406,11 +1431,14 @@ if (isMainThread) {
             <button id="toggleDemoBtn" class="btn btn-secondary" onclick="toggleDemoMode()">
               🔌 כניסה למצב דמו
             </button>
+            <button id="togglePauseBtn" class="btn btn-secondary" onclick="togglePauseMining()">
+              ⏸️ השהה כרייה
+            </button>
             <button class="btn btn-secondary" onclick="resetStats()">
               🔄 איפוס סטטיסטיקות
             </button>
             <button class="btn btn-danger" onclick="stopMiner()">
-              🛑 עצור כרייה
+              🛑 עצור כרייה (סגירת שרת)
             </button>
           </div>
         </div>
@@ -1499,6 +1527,37 @@ if (isMainThread) {
         updateDemoUI(data.demo_active);
       } catch (e) {
         console.error(e);
+      }
+    }
+
+    async function togglePauseMining() {
+      try {
+        const res = await fetch('/api/mining/toggle', {
+          method: 'POST',
+          headers: {
+            'X-Auth-Token': DASHBOARD_TOKEN,
+            'Content-Type': 'application/json'
+          }
+        });
+        const data = await res.json();
+        updatePauseBtn(data.mining_paused);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function updatePauseBtn(paused) {
+      const btn = document.getElementById('togglePauseBtn');
+      if (paused) {
+        btn.innerText = '▶️ המשך כרייה';
+        btn.className = 'btn btn-primary';
+        btn.style.color = '#070a13';
+        btn.style.borderColor = 'transparent';
+      } else {
+        btn.innerText = '⏸️ השהה כרייה';
+        btn.className = 'btn btn-secondary';
+        btn.style.color = '';
+        btn.style.borderColor = '';
       }
     }
     
@@ -1605,6 +1664,7 @@ if (isMainThread) {
         // Toggles
         updatePhoneMiningBtn(data.phones_mining_enabled);
         updateDemoUI(data.demo_mode_active);
+        updatePauseBtn(data.mining_paused);
         
         // Update wallet address
         const wallet = data.wallet_address || 'bc1qwm58u3zaf63f0dx63qk5p867kps26ykf3uylcs';
