@@ -199,9 +199,9 @@ if (isMainThread) {
       // If authorized, write the custom appropriate message
       if (msg.includes('🔐 החיבור לבריכה אושר בהצלחה') || msg.includes('Authorized')) {
         try {
-          fs.appendFileSync('workers.log', ' =========== מעקב וורקרים: פירוט ביצועי ליבות וחיבורי סמארטפונים ===========\n');
-          fs.appendFileSync('system.log', ' =========== בקרת איכות: ניהול משאבים, טמפרטורה וויסות ליבות ===========\n');
-          fs.appendFileSync('mining.log', ' =========== הצלחות כרייה: מציאת שיתופים (Shares) וחיבור לבריכה (Stratum) ===========\n');
+          fs.appendFileSync('workers.log', '           =========== מעקב וורקרים: פירוט ביצועי ליבות וחיבורי סמארטפונים ===========\n');
+          fs.appendFileSync('system.log', '           =========== בקרת איכות: ניהול משאבים, טמפרטורה וויסות ליבות ===========\n');
+          fs.appendFileSync('mining.log', '           =========== הצלחות כרייה: מציאת שיתופים (Shares) וחיבור לבריכה (Stratum) ===========\n');
         } catch (innerErr) {
           originalError('שגיאה בכתיבת הודעות התאמה לעמודים:', innerErr.message);
         }
