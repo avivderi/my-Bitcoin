@@ -1,3 +1,13 @@
+# WARNING: This script's "Case B" test is circular reasoning, not evidence.
+# It reconstructs the already-known-correct header nonce bytes via a
+# self-canceling transformation (encode as BE, then have the "pool" decode
+# and re-encode as LE) - which is mathematically guaranteed to reproduce the
+# correct answer regardless of what the real pool actually expects on the
+# wire. This script does NOT test anything about public-pool.io's real
+# parsing behavior. Do NOT use its output to justify switching the nonce
+# submission format to big-endian. See stratum-miner.mjs for the locked,
+# externally-verified little-endian implementation.
+
 import hashlib
 import binascii
 

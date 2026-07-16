@@ -173,6 +173,8 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
                     'job_id': job_id,
                     'extranonce2': extranonce2,
                     'ntime': job['ntime'],
+                    # LOCKED - do not change to '>I' (big-endian). See stratum-miner.mjs
+                    # for the full explanation of why little-endian is correct here.
                     'nonce': struct.pack('<I', nonce).hex(),
                     'header_hex': header_hex,
                     'hash_le_hex': hash_le_hex,
