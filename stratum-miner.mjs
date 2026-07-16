@@ -2291,12 +2291,9 @@ if (isMainThread) {
       }
       
       if (hashValue <= shareTarget) {
-        // Fix for "Difficulty too low" error:
-        // The stratum protocol expects the nonce in the submit payload as a hex string of the big-endian representation,
-        // because the pool's validation reverses it back to little-endian when reconstructing the header.
-        // Therefore, we write it as big-endian (BE) here so the hex string is '00000000' up to 'ffffffff' in normal readable order.
+        // Must match the little-endian bytes already written into the header at offset 76 via writeUInt32LE - do NOT change to BE.
         const nonceBuf = Buffer.alloc(4);
-        nonceBuf.writeUInt32BE(nonce, 0);
+        nonceBuf.writeUInt32LE(nonce, 0);
         const nonceHex = nonceBuf.toString('hex');
         
         parentPort.postMessage({
