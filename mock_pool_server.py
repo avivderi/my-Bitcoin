@@ -52,7 +52,7 @@ def handle_client(client_socket):
                         diff_msg = {
                             "id": None,
                             "method": "mining.set_difficulty",
-                            "params": [0.02]
+                            "params": [0.0001]
                         }
                         client_socket.sendall((json.dumps(diff_msg) + "\n").encode('utf-8'))
                         print(f"Sent set_difficulty: {diff_msg}")
@@ -102,8 +102,12 @@ def start_server():
         server.bind(("127.0.0.1", 3334))
         server.listen(5)
         print("Mock Stratum Server listening on 127.0.0.1:3334")
-        client, addr = server.accept()
-        handle_client(client)
+        while True:
+            try:
+                client, addr = server.accept()
+                handle_client(client)
+            except Exception as client_err:
+                print(f"Client connection error: {client_err}")
     except Exception as e:
         print(f"Server error: {e}")
     finally:

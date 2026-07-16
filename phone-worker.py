@@ -122,9 +122,11 @@ def swap_endian_words(hex_str):
 # Hashing worker process
 def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonce, result_queue):
     try:
-        # Target calculation (Solo Bitcoin target representation)
         max_target = 0x00000000FFFF0000000000000000000000000000000000000000000000000000
-        target = max_target // int(max(1, difficulty))
+        diff_val = max(0.000001, float(difficulty))
+        scale = 1000000
+        scaled_diff = int(round(diff_val * scale))
+        target = (max_target * scale) // scaled_diff
         
         job_id = job['jobId']
         prev_hash = binascii.unhexlify(swap_endian_words(job['prevHash']))
@@ -171,7 +173,7 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
                     'job_id': job_id,
                     'extranonce2': extranonce2,
                     'ntime': job['ntime'],
-                    'nonce': struct.pack('<I', nonce).hex(),
+                    'nonce': struct.pack('>I', nonce).hex(),
                     'header_hex': header_hex,
                     'hash_le_hex': hash_le_hex,
                     'hash_be_hex': hash_be_hex,

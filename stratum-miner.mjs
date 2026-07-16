@@ -67,7 +67,11 @@ function hashToBigInt(buf) {
 
 function calcShareTarget(diff) {
   const maxTarget = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
-  return maxTarget / BigInt(Math.max(1, Math.floor(diff)));
+  if (diff <= 0) diff = 1;
+  const scale = 1000000n;
+  const scaledDiff = BigInt(Math.round(diff * 1000000));
+  if (scaledDiff === 0n) return maxTarget;
+  return (maxTarget * scale) / scaledDiff;
 }
 
 if (isMainThread) {
@@ -195,9 +199,9 @@ if (isMainThread) {
       // If authorized, write the custom appropriate message
       if (msg.includes('🔐 החיבור לבריכה אושר בהצלחה') || msg.includes('Authorized')) {
         try {
-          fs.appendFileSync('workers.log', ' ++++ מעקב וורקרים: פירוט ביצועי ליבות וחיבורי סמארטפונים\n');
-          fs.appendFileSync('system.log', ' ++++ בקרת איכות: ניהול משאבים, טמפרטורה וויסות ליבות\n');
-          fs.appendFileSync('mining.log', ' ++++ הצלחות כרייה: מציאת שיתופים (Shares) וחיבור לבריכה (Stratum)\n');
+          fs.appendFileSync('workers.log', ' =========== מעקב וורקרים: פירוט ביצועי ליבות וחיבורי סמארטפונים ===========\n');
+          fs.appendFileSync('system.log', ' =========== בקרת איכות: ניהול משאבים, טמפרטורה וויסות ליבות ===========\n');
+          fs.appendFileSync('mining.log', ' =========== הצלחות כרייה: מציאת שיתופים (Shares) וחיבור לבריכה (Stratum) ===========\n');
         } catch (innerErr) {
           originalError('שגיאה בכתיבת הודעות התאמה לעמודים:', innerErr.message);
         }
@@ -2450,11 +2454,12 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
         bestHashHex = reverseBytes(hash).toString('hex');
         hasNewBestLocal = true;
       }
-      
       if (hashValue <= shareTarget) {
-        // Must match the little-endian bytes already written into the header at offset 76 via writeUInt32LE - do NOT change to BE.
+        // The stratum protocol expects the nonce in the submit payload as a hex string of the big-endian representation,
+        // because the pool's validation reverses it back to little-endian when reconstructing the header.
+        // Therefore, we write it as big-endian (BE) here.
         const nonceBuf = Buffer.alloc(4);
-        nonceBuf.writeUInt32LE(nonce, 0);
+        nonceBuf.writeUInt32BE(nonce, 0);
         const nonceHex = nonceBuf.toString('hex');
         
         parentPort.postMessage({

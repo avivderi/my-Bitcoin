@@ -17,15 +17,8 @@ def cleanup():
         try:
             with open(f'/proc/{pid_str}/cmdline', 'r') as f:
                 cmdline = f.read()
-            if 'stratum-miner.mjs' in cmdline:
-                # Check if it's the current running one we just started
-                # Wait, our current running one has its own PID. We can find it by checking if it matches the parent process or if it's in the log.
-                # Actually, let's print it first.
-                print(f"Found miner process: PID {pid}, cmdline: {cmdline!r}")
-                # We want to kill other instances, but how do we know which one is the one we just started?
-                # We can check its start time or just kill all of them, and then we will restart it cleanly!
-                # Yes, killing all stratum-miner.mjs processes (including the one we just started) is the cleanest way.
-                # Then we start a fresh one, knowing no other instances exist!
+            if 'stratum-miner.mjs' in cmdline or 'mock_pool_server.py' in cmdline:
+                print(f"Found process to clean: PID {pid}, cmdline: {cmdline!r}")
                 os.kill(pid, signal.SIGTERM)
                 print(f"Killed process {pid}")
                 killed_count += 1
