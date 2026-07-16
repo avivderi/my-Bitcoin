@@ -2464,7 +2464,7 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
         // format is a category error - that page describes header binary layout, not
         // the Stratum mining.submit wire format. Do NOT change this without an
         // explicit organic "✅ Share התקבל" rejection log from public-pool.io first.
-        const nonceHex = nonce.toString(16).padStart(8, '0');  // ⚠️ זה בעצם BE!
+        const nonceHex = nonce.toString(16).padStart(8, '0');
         
         parentPort.postMessage({
           type: 'share',
