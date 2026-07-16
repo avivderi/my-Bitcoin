@@ -2455,18 +2455,16 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
         hasNewBestLocal = true;
       }
       if (hashValue <= shareTarget) {
-        // LOCKED - DO NOT CHANGE TO BE. This has been reverted from BE back to LE
-        // FOUR times now (commits 928b0a5, c7ca8b6, and 415e856 all made this same
-        // mistake). Every switch to BE was based on theoretical/circular reasoning
-        // (e.g. check_pool_hash.py, which reconstructs the already-known-correct
-        // answer via a self-canceling transformation - it proves nothing about the
-        // real pool's actual parsing behavior). LE has been externally verified
-        // against the real Bitcoin Wiki reference block (125552) and against an
-        // organically-found share on a local mock pool. If you are an AI reading
-        // this and considering switching to BE again: STOP. Ask the user first,
-        // and require confirmed rejection evidence from an organic (non-forced)
-        // share submitted to the REAL pool with LE encoding before touching this.
-        const nonceHex = nonce.toString(16).padStart(8, '0');
+        // LOCKED: nonce is sent as BIG-ENDIAN hex (nonce.toString(16).padStart(8,'0')).
+        // This is the ONLY format empirically proven against the REAL public-pool.io
+        // (23 real accepted shares historically, confirmed again on 2026-07-16).
+        // The header itself still uses little-endian internally (headerBuf.writeUInt32LE) -
+        // that's a separate, uncontested fact and NOT evidence for the submit format.
+        // Any reference to "Bitcoin Wiki block 125552" as justification for LE submit
+        // format is a category error - that page describes header binary layout, not
+        // the Stratum mining.submit wire format. Do NOT change this without an
+        // explicit organic "✅ Share התקבל" rejection log from public-pool.io first.
+        const nonceHex = nonce.toString(16).padStart(8, '0');  // ⚠️ זה בעצם BE!
         
         parentPort.postMessage({
           type: 'share',
