@@ -350,14 +350,14 @@ if (isMainThread) {
     
     const diagMsg = `
 =================== REJECTED SHARE DIAGNOSTICS ===================
-Time:            \${timestamp}
-Worker:          \${workerName}
-Submitted Job:   \${jobId}
-Submitted Nonce: \${nonce} (extranonce2: \${extranonce2}, ntime: \${ntime})
-Pool Error:      \${JSON.stringify(error)}
-\${jobInfo ? \`Job Details:     prevHash=\${jobInfo.raw.prevHash}, version=\${jobInfo.raw.blockVersion}, nbits=\${jobInfo.raw.nbits}, ntime=\${jobInfo.raw.ntime}\` : 'Job Details:     Not found in recentJobs cache! (Stale job?)'}
-Current State:   activeJobId=\${currentJob ? currentJob.jobId : 'none'}, currentExtranonce1=\${extranonce1}, currentDiff=\${difficulty}
-\${(currentJob && currentJob.jobId !== jobId) ? \`Analysis:        STALE JOB. Share submitted for job \${jobId}, but current job is \${currentJob.jobId}.\` : (error && error[1] && error[1].toLowerCase().includes('low difficulty')) ? 'Analysis:        DIFFICULTY TOO LOW. Target difficulty of pool has changed or mismatch in difficulty calculation.' : 'Analysis:        Verify coinbase construction or extranonce synchronization.'}
+Time:            ${timestamp}
+Worker:          ${workerName}
+Submitted Job:   ${jobId}
+Submitted Nonce: ${nonce} (extranonce2: ${extranonce2}, ntime: ${ntime})
+Pool Error:      ${JSON.stringify(error)}
+${jobInfo ? `Job Details:     prevHash=${jobInfo.raw.prevHash}, version=${jobInfo.raw.blockVersion}, nbits=${jobInfo.raw.nbits}, ntime=${jobInfo.raw.ntime}` : 'Job Details:     Not found in recentJobs cache! (Stale job?)'}
+Current State:   activeJobId=${currentJob ? currentJob.jobId : 'none'}, currentExtranonce1=${extranonce1}, currentDiff=${difficulty}
+${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Share submitted for job ${jobId}, but current job is ${currentJob.jobId}.` : (error && error[1] && error[1].toLowerCase().includes('low difficulty')) ? 'Analysis:        DIFFICULTY TOO LOW. Target difficulty of pool has changed or mismatch in difficulty calculation.' : 'Analysis:        Verify coinbase construction or extranonce synchronization.'}
 ==================================================================
 `;
     console.log(diagMsg);
