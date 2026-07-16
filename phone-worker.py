@@ -161,12 +161,23 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
             hash_val = int.from_bytes(block_hash, byteorder='little')
             
             if hash_val <= target:
+                header_bytes = header_prefix + struct.pack('<I', nonce)
+                header_hex = binascii.hexlify(header_bytes).decode()
+                hash_le_hex = binascii.hexlify(block_hash).decode()
+                hash_be_hex = binascii.hexlify(block_hash[::-1]).decode()
+                
                 result_queue.put({
                     'type': 'share',
                     'job_id': job_id,
                     'extranonce2': extranonce2,
                     'ntime': job['ntime'],
-                    'nonce': struct.pack('<I', nonce).hex()
+                    'nonce': struct.pack('<I', nonce).hex(),
+                    'header_hex': header_hex,
+                    'hash_le_hex': hash_le_hex,
+                    'hash_be_hex': hash_be_hex,
+                    'nonce_val': nonce,
+                    'difficulty': difficulty,
+                    'share_target': hex(target)
                 })
                 # Re-setup
                 extranonce2 = binascii.hexlify(os.urandom(extranonce2_size)).decode()
@@ -225,7 +236,7 @@ def start_local_mining(job, difficulty, extranonce1, extranonce2_size, threads):
     is_mining = True
 
 def poll_results():
-    global current_hashrate, total_shares_found, result_queue, pending_logs
+    global current_hashrate, total_shares_found, result_queue, pending_logs, current_job_id
     if not is_mining or result_queue is None:
         current_hashrate = 0.0
         return
@@ -241,8 +252,22 @@ def poll_results():
                 hashes_sum += item['hashes']
                 elapsed_sum += item['elapsed']
             elif item['type'] == 'share':
+                if item['job_id'] != current_job_id:
+                    print(f"🧹 Stale share discarded in worker queue (Job ID mismatch: {item['job_id']} vs current {current_job_id})")
+                    continue
                 total_shares_found += 1
-                submit_share(item['job_id'], item['extranonce2'], item['ntime'], item['nonce'])
+                submit_share(
+                    item['job_id'],
+                    item['extranonce2'],
+                    item['ntime'],
+                    item['nonce'],
+                    header_hex=item.get('header_hex'),
+                    hash_le_hex=item.get('hash_le_hex'),
+                    hash_be_hex=item.get('hash_be_hex'),
+                    nonce_val=item.get('nonce_val'),
+                    difficulty=item.get('difficulty'),
+                    share_target=item.get('share_target')
+                )
             elif item['type'] == 'status':
                 print(f"💬 {item['message']}")
                 pending_logs.append(item['message'])
@@ -253,7 +278,7 @@ def poll_results():
         # Calculate hashrate in KH/s
         current_hashrate = (hashes_sum / elapsed_sum) / 1000.0
 
-def submit_share(job_id, extranonce2, ntime, nonce):
+def submit_share(job_id, extranonce2, ntime, nonce, header_hex=None, hash_le_hex=None, hash_be_hex=None, nonce_val=None, difficulty=None, share_target=None):
     """Report a found share to the PC Master Server."""
     url = f"http://{MASTER_IP}:{MASTER_PORT}/api/worker/submit"
     payload = {
@@ -263,6 +288,19 @@ def submit_share(job_id, extranonce2, ntime, nonce):
         "ntime": ntime,
         "nonce": nonce
     }
+    if header_hex:
+        payload["header_hex"] = header_hex
+    if hash_le_hex:
+        payload["hash_le_hex"] = hash_le_hex
+    if hash_be_hex:
+        payload["hash_be_hex"] = hash_be_hex
+    if nonce_val is not None:
+        payload["nonce_val"] = nonce_val
+    if difficulty is not None:
+        payload["difficulty"] = difficulty
+    if share_target is not None:
+        payload["share_target"] = share_target
+        
     try:
         req = urllib.request.Request(url)
         req.add_header('Content-Type', 'application/json')
@@ -315,6 +353,8 @@ def main():
     print(f"🔧 Worker Name: {WORKER_NAME}" + ("-demo" if IS_DEMO else ""))
     print(f"💻 Master Server IP: {MASTER_IP}:{MASTER_PORT}")
     print(f"====================================================")
+    current_difficulty = None
+    current_extranonce1 = None
     
     try:
         while True:
@@ -364,18 +404,25 @@ def main():
                         print("🛑 Server requested mining STOP.")
                         stop_local_mining()
                         current_job_id = None
+                        current_difficulty = None
+                        current_extranonce1 = None
                 else:
                     # Server wants us to mine
                     job_id = job.get("jobId") if job else None
-                    job_changed = config.get("job_changed", False) or (job_id != current_job_id)
+                    
+                    difficulty_changed = (difficulty != current_difficulty)
+                    extranonce1_changed = (extranonce1 != current_extranonce1)
+                    job_changed = config.get("job_changed", False) or (job_id != current_job_id) or difficulty_changed or extranonce1_changed
                     
                     if not is_mining or target_threads != current_threads or (job and job_changed):
                         if not IS_DEMO:
                             if job and difficulty and extranonce1:
-                                print(f"⚡ Server requested mining START/UPDATE with {target_threads} threads. (Job changed: {job_changed})")
+                                print(f"⚡ Server requested mining START/UPDATE with {target_threads} threads. (Job changed: {job_changed}, Diff changed: {difficulty_changed}, Extranonce1 changed: {extranonce1_changed})")
                                 start_local_mining(job, difficulty, extranonce1, extranonce2_size, target_threads)
                                 current_threads = target_threads
                                 current_job_id = job_id
+                                current_difficulty = difficulty
+                                current_extranonce1 = extranonce1
                             else:
                                 print("⏳ Waiting for valid job from server...")
                         else:
@@ -386,8 +433,10 @@ def main():
                             is_mining = True
                             current_threads = target_threads
                             current_job_id = job_id
+                            current_difficulty = difficulty
+                            current_extranonce1 = extranonce1
             
-            time.sleep(5)
+            time.sleep(2)
             
     except KeyboardInterrupt:
         print("\n⏹️ Stopping worker daemon...")

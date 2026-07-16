@@ -298,11 +298,70 @@ if (isMainThread) {
   const shareQueue = [];
   let sharesFound = 0;
   let sharesAccepted = 0;
+  let sharesRejected = 0;
   let demoSharesFound = 0;
   let demoSharesAccepted = 0;
   let totalHashesGlobal = 0;
   let bestDifficulty = 0;
   let bestDifficultyHash = '';
+
+  let recentJobs = new Map();
+  let diagnosticShareLogged = false;
+
+  function logDiagnosticShare(source, shareData) {
+    if (diagnosticShareLogged) return;
+    diagnosticShareLogged = true;
+
+    const jobId = shareData.jobId || shareData.job_id;
+    const jobInfo = recentJobs.get(jobId);
+    const headerHex = shareData.headerHex || shareData.header_hex;
+    const hashLEHex = shareData.hashLEHex || shareData.hash_le_hex;
+    const hashBEHex = shareData.hashBEHex || shareData.hash_be_hex;
+    const nonceVal = shareData.nonceVal || shareData.nonce_val;
+    const shareTargetVal = shareData.shareTarget || shareData.share_target;
+    
+    console.log(`\n=================== DIAGNOSTIC SHARE LOG (${source}) ===================`);
+    if (jobInfo) {
+      console.log(`Job ID:          ${jobInfo.raw.jobId}`);
+      console.log(`PrevHash (Raw):  ${jobInfo.raw.prevHash}`);
+      console.log(`Coinb1 (Raw):    ${jobInfo.raw.coinb1}`);
+      console.log(`Coinb2 (Raw):    ${jobInfo.raw.coinb2}`);
+      console.log(`Merkle Branch:   ${JSON.stringify(jobInfo.raw.merkleBranch)}`);
+    } else {
+      console.log(`Job ID:          ${jobId} (Not found in recentJobs cache!)`);
+    }
+    console.log(`Extranonce1:     ${extranonce1}`);
+    console.log(`Extranonce2Size: ${extranonce2Size}`);
+    console.log(`Extranonce2:     ${shareData.extranonce2}`);
+    console.log(`Nonce:           ${nonceVal || 'N/A'}`);
+    console.log(`NonceHex (Sent): ${shareData.nonce}`);
+    console.log(`Header (Hex):    ${headerHex || 'N/A'}`);
+    console.log(`Hash LE (Hex):   ${hashLEHex || 'N/A'}`);
+    console.log(`Hash BE (Hex):   ${hashBEHex || 'N/A'}`);
+    console.log(`Difficulty:      ${shareData.difficulty || difficulty}`);
+    console.log(`Share Target:    ${shareTargetVal || 'N/A'}`);
+    console.log(`========================================================================\n`);
+  }
+
+  function logRejectedShareDiagnostics(workerName, submission, error) {
+    const timestamp = new Date().toISOString();
+    const [subWorkerName, jobId, extranonce2, ntime, nonce] = submission.params;
+    const jobInfo = recentJobs.get(jobId);
+    
+    const diagMsg = `
+=================== REJECTED SHARE DIAGNOSTICS ===================
+Time:            \${timestamp}
+Worker:          \${workerName}
+Submitted Job:   \${jobId}
+Submitted Nonce: \${nonce} (extranonce2: \${extranonce2}, ntime: \${ntime})
+Pool Error:      \${JSON.stringify(error)}
+\${jobInfo ? \`Job Details:     prevHash=\${jobInfo.raw.prevHash}, version=\${jobInfo.raw.blockVersion}, nbits=\${jobInfo.raw.nbits}, ntime=\${jobInfo.raw.ntime}\` : 'Job Details:     Not found in recentJobs cache! (Stale job?)'}
+Current State:   activeJobId=\${currentJob ? currentJob.jobId : 'none'}, currentExtranonce1=\${extranonce1}, currentDiff=\${difficulty}
+\${(currentJob && currentJob.jobId !== jobId) ? \`Analysis:        STALE JOB. Share submitted for job \${jobId}, but current job is \${currentJob.jobId}.\` : (error && error[1] && error[1].toLowerCase().includes('low difficulty')) ? 'Analysis:        DIFFICULTY TOO LOW. Target difficulty of pool has changed or mismatch in difficulty calculation.' : 'Analysis:        Verify coinbase construction or extranonce synchronization.'}
+==================================================================
+`;
+    console.log(diagMsg);
+  }
 
   // פונקציה לשמירת סטטיסטיקה לקובץ (כתיבה אטומית למניעת שגיאות/חלקים חסרים)
   function saveStatsSync() {
@@ -312,6 +371,7 @@ if (isMainThread) {
       uptime_seconds: uptimeSec,
       shares_found: sharesFound,
       shares_accepted: sharesAccepted,
+      shares_rejected: sharesRejected,
       hashrate_khs: parseFloat(totalKHs.toFixed(1)),
       total_hashes: totalHashesGlobal,
       difficulty: difficulty,
@@ -350,10 +410,11 @@ if (isMainThread) {
       const data = JSON.parse(fs.readFileSync('stats.json', 'utf8'));
       sharesFound = data.shares_found || 0;
       sharesAccepted = data.shares_accepted || 0;
+      sharesRejected = data.shares_rejected || 0;
       totalHashesGlobal = data.total_hashes || 0;
       bestDifficulty = data.best_difficulty || 0;
       bestDifficultyHash = data.best_difficulty_hash || '';
-      console.log(`📊 נתונים קודמים נטענו מ-stats.json: נמצאו ${sharesFound}, התקבלו ${sharesAccepted}, קושי שיא: ${bestDifficulty}`);
+      console.log(`📊 נתונים קודמים נטענו מ-stats.json: נמצאו ${sharesFound}, התקבלו ${sharesAccepted}, נדחו ${sharesRejected}, קושי שיא: ${bestDifficulty}`);
     }
   } catch (e) {
     console.error('שגיאה בטעינת stats.json:', e.message);
@@ -412,6 +473,9 @@ if (isMainThread) {
               sharesFound++;
               saveStatsSync(); // שמירה מיידית של מציאת ה-Share
               console.log(`🎉 [Worker] Share נמצא! שולח ל-Pool...`);
+              
+              // Diagnostic logging
+              logDiagnosticShare('Local PC Worker', msg);
               
               // התראת שולחן עבודה על מציאת Share
               exec(`notify-send -u normal "⛏️ נמצאה מנייה!" "שולח מניית כרייה לבריכת הכרייה..."`);
@@ -737,8 +801,9 @@ if (isMainThread) {
                 hashrate: payload.hashrate,
                 threads: payload.threads || 4,
                 max_cores: payload.max_cores || 8,
-                shares_accepted: payload.shares_accepted || 0,
-                shares_rejected: payload.shares_rejected || 0,
+                shares_found: payload.shares_accepted || 0,
+                shares_accepted: 0,
+                shares_rejected: 0,
                 uptime: payload.uptime || 0,
                 is_mining: payload.is_mining || false,
                 last_seen: now,
@@ -750,8 +815,8 @@ if (isMainThread) {
               worker.temp = payload.temp;
               worker.hashrate = payload.hashrate;
               worker.max_cores = payload.max_cores || 8;
-              worker.shares_accepted = payload.shares_accepted || 0;
-              worker.shares_rejected = payload.shares_rejected || 0;
+              worker.shares_found = payload.shares_accepted || 0;
+              // Do not overwrite shares_accepted and shares_rejected as they are tracked from pool response
               worker.uptime = payload.uptime || 0;
               worker.is_mining = payload.is_mining || false;
               worker.last_seen = now;
@@ -821,6 +886,9 @@ if (isMainThread) {
             } else {
               console.log(`🎉 Remote worker [${name}] submitted a share! Submitting to pool...`);
               
+              // Diagnostic logging
+              logDiagnosticShare(`Remote Worker: ${name}`, payload);
+
               // Submit to the Stratum pool using main connection
               send('mining.submit', [
                 `${BTC_ADDRESS}.${name}`,
@@ -890,6 +958,7 @@ if (isMainThread) {
           if (req.url === '/api/stats/reset') {
             sharesFound = 0;
             sharesAccepted = 0;
+            sharesRejected = 0;
             totalHashesGlobal = 0;
             bestDifficulty = 0;
             bestDifficultyHash = '';
@@ -898,6 +967,13 @@ if (isMainThread) {
             demoSharesFound = 0;
             demoSharesAccepted = 0;
             demoLogs.length = 0;
+            
+            // Clear remote workers stats too!
+            for (const [key, worker] of remoteWorkers.entries()) {
+              worker.shares_found = 0;
+              worker.shares_accepted = 0;
+              worker.shares_rejected = 0;
+            }
             
             saveStatsSync();
             console.log('🔄 נתוני הכרייה והסטטיסטיקות אופסו בהצלחה מלוח הבקרה.');
@@ -1026,6 +1102,7 @@ if (isMainThread) {
         uptime_seconds: uptimeSec,
         shares_found: localSharesFound,
         shares_accepted: localSharesAccepted,
+        shares_rejected: demoModeActive ? 0 : sharesRejected,
         hashrate_khs: parseFloat(totalKHs.toFixed(1)),
         total_hashes: totalHashesGlobal,
         difficulty: difficulty,
@@ -1795,7 +1872,12 @@ if (isMainThread) {
           combinedHashrateEl.style.color = '';
         }
         
-        document.getElementById('shares').innerText = data.shares_found + ' (' + data.shares_accepted + ' Accepted)';
+        let sharesText = data.shares_found + ' (' + data.shares_accepted + ' Accepted';
+        if (data.shares_rejected > 0) {
+          sharesText += ', ' + data.shares_rejected + ' Rejected';
+        }
+        sharesText += ')';
+        document.getElementById('shares').innerText = sharesText;
         document.getElementById('pendingShares').innerText = data.pending_shares_count || 0;
         
         // Update PC Cores
@@ -1892,7 +1974,9 @@ if (isMainThread) {
                 </div>
                 <div class="worker-stat-row">
                   <span class="worker-stat-label">פתרונות (Shares)</span>
-                  <span class="worker-stat-val" style="color: var(--success);">\${w.shares_accepted}</span>
+                  <span class="worker-stat-val" style="color: var(--success);">
+                    \${w.shares_accepted || 0}\${w.shares_rejected ? ' (<span style="color: var(--error); font-weight: bold;">' + w.shares_rejected + ' נדחו</span>)' : ''}
+                  </span>
                 </div>
                 <div class="worker-stat-row">
                   <span class="worker-stat-label">זמן ריצה</span>
@@ -2044,30 +2128,66 @@ if (isMainThread) {
     // בדיקה אם מדובר בתגובה לשליחת Share
     const parsedId = Number(msg.id);
     if (msg.id && pendingSubmissions.has(parsedId)) {
+      const submission = pendingSubmissions.get(parsedId);
       pendingSubmissions.delete(parsedId);
       if (typeof savePendingSharesSync === 'function') {
         savePendingSharesSync();
       }
       console.log(`📡 תגובה מקבלת Share מהבריכה (מזהה ${msg.id}): תוצאה=${JSON.stringify(msg.result)}, שגיאה=${JSON.stringify(msg.error)}`);
-      if (msg.result === true || (msg.result && !msg.error)) {
-        sharesAccepted++;
-        saveStatsSync(); // שמירה מיידית של ה-Share שהתקבל בהצלחה
-        console.log(`✅ Share התקבל בשרת בהצלחה! (סה"כ Accepted: ${sharesAccepted})`);
-        
-        // התראת שולחן עבודה על מנייה שאושרה
-        exec(`notify-send -u normal "✅ מנייה אושרה!" "הבריכה קיבלה ואישרה את מניית הכרייה שלך!"`);
+      
+      const fullWorkerName = submission.params[0];
+      const dotIndex = fullWorkerName.lastIndexOf('.');
+      const workerName = dotIndex !== -1 ? fullWorkerName.substring(dotIndex + 1) : fullWorkerName;
+      const isAccepted = msg.result === true || (msg.result && !msg.error);
+
+      if (workerName === WORKER_NAME) {
+        if (isAccepted) {
+          sharesAccepted++;
+          console.log(`✅ Share התקבל בשרת בהצלחה! (סה"כ Accepted: ${sharesAccepted})`);
+          exec(`notify-send -u normal "✅ מנייה אושרה!" "הבריכה קיבלה ואישרה את מניית הכרייה שלך!"`);
+        } else {
+          sharesRejected++;
+          console.log(`⚠️ Share נדחה על ידי השרת. שגיאה: ${JSON.stringify(msg.error)}`);
+          exec(`notify-send -u normal "⚠️ מנייה נדחתה" "שרת הכרייה דחה את המנייה ששלחת."`);
+          logRejectedShareDiagnostics(workerName, submission, msg.error);
+        }
+        saveStatsSync();
       } else {
-        console.log(`⚠️ Share נדחה על ידי השרת. שגיאה: ${JSON.stringify(msg.error)}`);
-        
-        // התראת שולחן עבודה על מנייה שנדחתה
-        exec(`notify-send -u normal "⚠️ מנייה נדחתה" "שרת הכרייה דחה את המנייה ששלחת."`);
+        const rw = remoteWorkers.get(workerName);
+        if (rw) {
+          if (isAccepted) {
+            rw.shares_accepted = (rw.shares_accepted || 0) + 1;
+            sharesAccepted++;
+            console.log(`✅ Share של Remote worker [${workerName}] אושר בבריכה! (סה"כ Accepted: ${sharesAccepted})`);
+          } else {
+            rw.shares_rejected = (rw.shares_rejected || 0) + 1;
+            sharesRejected++;
+            console.log(`⚠️ Share של Remote worker [${workerName}] נדחה על ידי הבריכה. שגיאה: ${JSON.stringify(msg.error)}`);
+            logRejectedShareDiagnostics(workerName, submission, msg.error);
+          }
+        }
+        saveStatsSync();
       }
       return;
     }
 
     if (msg.id === 1 && msg.result) {
-      extranonce1 = msg.result[1];
-      extranonce2Size = msg.result[2];
+      const newExtranonce1 = msg.result[1];
+      const newExtranonce2Size = msg.result[2];
+      if (extranonce1 && extranonce1 !== newExtranonce1) {
+        console.log(`🔄 [Stratum] Extranonce1 changed from ${extranonce1} to ${newExtranonce1}. Flushing stale queued shares to prevent rejections.`);
+        shareQueue.length = 0;
+        pendingSubmissions.clear();
+        if (typeof savePendingSharesSync === 'function') {
+          savePendingSharesSync();
+        }
+      }
+      extranonce1 = newExtranonce1;
+      extranonce2Size = newExtranonce2Size;
+      
+      // Notify workers of the new extranonce
+      workers.forEach(w => w.postMessage({ type: 'extranonce', extranonce1, extranonce2Size }));
+      
       console.log(`📡 נרשם בהצלחה | extranonce1=${extranonce1}`);
       send('mining.authorize', [`${BTC_ADDRESS}.${WORKER_NAME}`, 'x']);
       return;
@@ -2110,6 +2230,40 @@ if (isMainThread) {
         ntime: msg.params[7],
         cleanJobs: msg.params[8],
       };
+
+      // Handle job cleaning to prevent submitting stale jobs
+      if (currentJob.cleanJobs === true || currentJob.cleanJobs === 1 || currentJob.cleanJobs === 'true') {
+        const initialLen = shareQueue.length;
+        for (let i = shareQueue.length - 1; i >= 0; i--) {
+          if (shareQueue[i].params[1] !== currentJob.jobId) {
+            shareQueue.splice(i, 1);
+          }
+        }
+        if (shareQueue.length < initialLen) {
+          console.log(`🧹 [Job Rotation] Clean job received. Flushed ${initialLen - shareQueue.length} stale shares from queue.`);
+          if (typeof savePendingSharesSync === 'function') {
+            savePendingSharesSync();
+          }
+        }
+      }
+
+      recentJobs.set(currentJob.jobId, {
+        raw: {
+          jobId: msg.params[0],
+          prevHash: msg.params[1],
+          coinb1: msg.params[2],
+          coinb2: msg.params[3],
+          merkleBranch: msg.params[4],
+          blockVersion: msg.params[5],
+          nbits: msg.params[6],
+          ntime: msg.params[7]
+        },
+        job: currentJob
+      });
+      if (recentJobs.size > 20) {
+        const firstKey = recentJobs.keys().next().value;
+        recentJobs.delete(firstKey);
+      }
       
       workers.forEach(w => w.postMessage({ 
         type: 'job', 
@@ -2140,7 +2294,7 @@ if (isMainThread) {
   connectToPool();
 
   function handleExit() {
-    originalLog(`\n\nסיכום: ${sharesFound} shares נמצאו, ${sharesAccepted} התקבלו.`);
+    originalLog(`\n\nסיכום: ${sharesFound} shares נמצאו, ${sharesAccepted} התקבלו, ${sharesRejected} נדחו.`);
     saveStatsSync();
     if (socket) socket.end();
     workers.forEach(w => {
@@ -2218,6 +2372,13 @@ if (isMainThread) {
       difficulty = msg.difficulty;
       shareTarget = calcShareTarget(difficulty);
     } 
+    else if (msg.type === 'extranonce') {
+      extranonce1 = msg.extranonce1;
+      extranonce2Size = msg.extranonce2Size;
+      if (currentJob) {
+        setupNewExtranonce2();
+      }
+    }
     else if (msg.type === 'best_difficulty') {
       if (msg.globalBestDifficulty && msg.globalBestDifficulty > 0) {
         const maxTarget = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
@@ -2276,7 +2437,7 @@ if (isMainThread) {
       return;
     }
     
-    const chunkSize = 50000;
+    const chunkSize = 1000;
     const maxNonce = 0xffffffff;
     
     for (let i = 0; i < chunkSize && nonce <= maxNonce; i++, nonce++) {
@@ -2301,7 +2462,13 @@ if (isMainThread) {
           jobId: currentJob.jobId,
           extranonce2: extranonce2,
           ntime: currentJob.ntime,
-          nonce: nonceHex
+          nonce: nonceHex,
+          headerHex: headerBuf.toString('hex'),
+          hashLEHex: hash.toString('hex'),
+          hashBEHex: Buffer.from(hash).reverse().toString('hex'),
+          nonceVal: nonce,
+          difficulty: difficulty,
+          shareTarget: shareTarget.toString(16)
         });
       }
     }
