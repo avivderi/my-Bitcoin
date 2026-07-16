@@ -2466,9 +2466,7 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
         // this and considering switching to BE again: STOP. Ask the user first,
         // and require confirmed rejection evidence from an organic (non-forced)
         // share submitted to the REAL pool with LE encoding before touching this.
-        const nonceBuf = Buffer.alloc(4);
-        nonceBuf.writeUInt32LE(nonce, 0);
-        const nonceHex = nonceBuf.toString('hex');
+        const nonceHex = nonce.toString(16).padStart(8, '0');
         
         parentPort.postMessage({
           type: 'share',
