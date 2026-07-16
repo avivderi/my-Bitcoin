@@ -173,7 +173,7 @@ def btc_mining_worker(job, difficulty, extranonce1, extranonce2_size, start_nonc
                     'job_id': job_id,
                     'extranonce2': extranonce2,
                     'ntime': job['ntime'],
-                    'nonce': struct.pack('>I', nonce).hex(),
+                    'nonce': struct.pack('<I', nonce).hex(),
                     'header_hex': header_hex,
                     'hash_le_hex': hash_le_hex,
                     'hash_be_hex': hash_be_hex,

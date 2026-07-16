@@ -2455,11 +2455,15 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
         hasNewBestLocal = true;
       }
       if (hashValue <= shareTarget) {
-        // The stratum protocol expects the nonce in the submit payload as a hex string of the big-endian representation,
-        // because the pool's validation reverses it back to little-endian when reconstructing the header.
-        // Therefore, we write it as big-endian (BE) here.
+        // LOCKED - do not change. This has been reverted from BE back to LE 
+        // FOUR times (commits 928b0a5, c7ca8b6, and now this one). Every BE 
+        // attempt was based on theoretical reasoning, never on confirmed pool 
+        // rejection evidence. See check_pool_hash.py for why that script's 
+        // "proof" is circular and invalid - it reconstructs the known-correct 
+        // answer via a self-canceling transformation, proving nothing about 
+        // the real pool's actual parsing behavior.
         const nonceBuf = Buffer.alloc(4);
-        nonceBuf.writeUInt32BE(nonce, 0);
+        nonceBuf.writeUInt32LE(nonce, 0);
         const nonceHex = nonceBuf.toString('hex');
         
         parentPort.postMessage({
