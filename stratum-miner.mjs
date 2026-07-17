@@ -888,23 +888,31 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
               demoSharesFound++;
               demoSharesAccepted++;
             } else {
-              console.log(`🎉 Remote worker [${name}] submitted a share! Submitting to pool...`);
-              
-              // Diagnostic logging
-              logDiagnosticShare(`Remote Worker: ${name}`, payload);
+                // בדיקת טריות ה-job לפני שמבזבזים round-trip לבריכה
+                const isStale = currentJob && payload.job_id !== currentJob.jobId;
 
-              // Submit to the Stratum pool using main connection
-              send('mining.submit', [
-                `${BTC_ADDRESS}.${name}`,
-                payload.job_id,
-                payload.extranonce2,
-                payload.ntime,
-                payload.nonce
-              ]);
+                if (isStale) {
+                  console.log(`⏭️ Share של Remote worker [${name}] נדחה מקומית - job ישן (submitted=${payload.job_id}, current=${currentJob ? currentJob.jobId : 'N/A'}). לא נשלח לבריכה.`);
+                  logDiagnosticShare(`Remote Worker: ${name} (STALE - not sent)`, payload);
+                } else {
+                  console.log(`🎉 Remote worker [${name}] submitted a share! Submitting to pool...`);
 
-              sharesFound++;
-              saveStatsSync();
-            }
+                  // Diagnostic logging
+                  logDiagnosticShare(`Remote Worker: ${name}`, payload);
+
+                  // Submit to the Stratum pool using main connection
+                  send('mining.submit', [
+                    `${BTC_ADDRESS}.${name}`,
+                    payload.job_id,
+                    payload.extranonce2,
+                    payload.ntime,
+                    payload.nonce
+                  ]);
+
+                  sharesFound++;
+                  saveStatsSync();
+                }
+              }
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ status: 'ok' }));

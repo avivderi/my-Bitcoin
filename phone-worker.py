@@ -284,6 +284,12 @@ def poll_results():
 
 def submit_share(job_id, extranonce2, ntime, nonce, header_hex=None, hash_le_hex=None, hash_be_hex=None, nonce_val=None, difficulty=None, share_target=None):
     """Report a found share to the PC Master Server."""
+    global current_job_id
+
+    if job_id != current_job_id:
+        print(f"🧹 Stale share discarded locally (Job ID mismatch: {job_id} vs current {current_job_id})")
+        return
+
     url = f"http://{MASTER_IP}:{MASTER_PORT}/api/worker/submit"
     payload = {
         "worker_name": WORKER_NAME + ("-demo" if IS_DEMO else ""),
