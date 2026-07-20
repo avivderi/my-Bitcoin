@@ -6,6 +6,7 @@ import http from 'http';
 import { Worker, isMainThread, parentPort } from 'worker_threads';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
+import { initLicense, getLicenseInfo } from './license.mjs';
 
 // ===== פונקציות עזר קריפטוגרפיות (משותפות) =====
 
@@ -1110,6 +1111,7 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
         }
       }
 
+      const licenseInfo = getLicenseInfo();
       const stats = {
         uptime_seconds: uptimeSec,
         shares_found: localSharesFound,
@@ -1131,7 +1133,12 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
         demo_mode_active: demoModeActive,
         mining_paused: miningPaused,
         remote_workers: Array.from(remoteWorkers.values()),
-        pending_shares_count: shareQueue.length + pendingSubmissions.size
+        pending_shares_count: shareQueue.length + pendingSubmissions.size,
+        license: {
+          tier:              licenseInfo.tier,
+          max_hours_per_day: licenseInfo.max_hours_per_day,
+          status:            licenseInfo.status,
+        }
       };
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(stats));
@@ -1675,6 +1682,10 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
               <span class="worker-stat-label">קושי שיא שנמצא (CPU)</span>
               <span id="bestDiff" class="health-val" style="color: var(--primary);">0</span>
             </div>
+            <div class="health-row">
+              <span class="worker-stat-label">רישיון (License)</span>
+              <span id="licenseTier" class="health-val" style="color: var(--accent);">טוען...</span>
+            </div>
           </div>
         </div>
         
@@ -1928,6 +1939,20 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
         // Update wallet address
         const wallet = data.wallet_address || 'bc1qwm58u3zaf63f0dx63qk5p867kps26ykf3uylcs';
         document.getElementById('walletAddress').innerText = wallet;
+        
+        // Update license tier
+        if (data.license) {
+          const tier = data.license.tier || 'unknown';
+          const maxH = data.license.max_hours_per_day;
+          const status = data.license.status || '';
+          const unlimited = maxH === 24;
+          const tierLabel = tier.charAt(0).toUpperCase() + tier.slice(1);
+          const hoursLabel = unlimited ? 'ללא הגבלה' : `${maxH}h/יום`;
+          const tierEl = document.getElementById('licenseTier');
+          tierEl.innerText = `${tierLabel} — ${hoursLabel}`;
+          if (status === 'active') tierEl.style.color = tier === 'pro' ? 'var(--primary)' : tier === 'basic' ? 'var(--accent)' : 'var(--text-muted)';
+          else tierEl.style.color = 'var(--error)';
+        }
         
         // Alert banner
         const alertBox = document.getElementById('alertBox');
@@ -2301,6 +2326,15 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
     }
   } catch (e) {
     console.error('שגיאה בטעינת pending-shares.json:', e.message);
+  }
+
+  // ── License authentication (must complete before pool connection) ────────────
+  try {
+    await initLicense();
+  } catch (err) {
+    console.error(`❌ [License] Authentication failed: ${err.message}`);
+    console.error('   Please check that license-server is running and try again.');
+    process.exit(1);
   }
 
   connectToPool();

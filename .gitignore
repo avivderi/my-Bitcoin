@@ -4,6 +4,8 @@ stats.json
 stats.json.tmp
 pending-shares.json
 pending-shares.json.tmp
+license.json
+license.json.tmp
 xmrig-miner/
 *.tmp
 *.log

@@ -1,0 +1,12 @@
+{
+  "name": "my-bitcoin-miner",
+  "version": "1.0.0",
+  "description": "Bitcoin solo mining dashboard",
+  "type": "module",
+  "scripts": {
+    "start": "node stratum-miner.mjs"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2"
+  }
+}
