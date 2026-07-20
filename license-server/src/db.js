@@ -59,6 +59,27 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_otc_code       ON one_time_codes(code);
   CREATE INDEX IF NOT EXISTS idx_rtk_hash       ON refresh_tokens(token_hash);
   CREATE INDEX IF NOT EXISTS idx_sub_user       ON subscriptions(user_id);
+
+  -- Phase 2: Stripe billing tables
+
+  -- Maps internal user_id → Stripe customer_id (1:1)
+  CREATE TABLE IF NOT EXISTS stripe_customers (
+    id                 TEXT PRIMARY KEY,
+    user_id            TEXT UNIQUE NOT NULL REFERENCES users(id),
+    stripe_customer_id TEXT UNIQUE NOT NULL,
+    created_at         INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
+  -- Idempotency log: every processed Stripe webhook event ID is stored here.
+  -- If Stripe re-delivers an event, we skip it immediately.
+  CREATE TABLE IF NOT EXISTS stripe_events (
+    stripe_event_id TEXT PRIMARY KEY,
+    event_type      TEXT NOT NULL,
+    processed_at    INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_stripe_cus_user ON stripe_customers(user_id);
+  CREATE INDEX IF NOT EXISTS idx_stripe_cus_id   ON stripe_customers(stripe_customer_id);
 `);
 
 export default db;

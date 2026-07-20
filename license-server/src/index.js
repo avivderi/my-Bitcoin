@@ -9,6 +9,7 @@ import db from './db.js';
 import { generateId } from './utils.js';
 import authRouter    from './routes/auth.js';
 import licenseRouter from './routes/license.js';
+import billingRouter, { stripeWebhookHandler, billingSuccessPage, billingCancelPage } from './routes/billing.js';
 
 // ── RSA key pair must be loaded before any route signs a token ───────────────
 loadOrGenerateKeys();
@@ -17,7 +18,11 @@ const app      = express();
 const PORT     = process.env.PORT     ?? 3456;
 const BASE_URL = process.env.BASE_URL ?? `http://localhost:${PORT}`;
 
-// ── Body parsing ─────────────────────────────────────────────────────────────
+// ── Stripe webhook: raw body MUST be registered before express.json() ──────────
+// Stripe requires the raw Buffer to verify the webhook signature.
+app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), stripeWebhookHandler);
+
+// ── Body parsing (all other routes) ─────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
@@ -82,8 +87,13 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.use('/auth',        authRouter);
-app.use('/api/license', licenseRouter);
+app.use('/auth',         authRouter);
+app.use('/api/license',  licenseRouter);
+app.use('/api/billing',  billingRouter);
+
+// Browser-facing pages opened after Stripe checkout redirect
+app.get('/billing/success', billingSuccessPage);
+app.get('/billing/cancel',  billingCancelPage);
 
 app.get('/health', (_req, res) =>
   res.json({ status: 'ok', service: 'license-server', ts: new Date().toISOString() }),
@@ -98,6 +108,8 @@ app.use((err, _req, res, _next) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`[license-server] Listening on ${BASE_URL}`);
-  console.log(`[license-server] Login URL: ${BASE_URL}/auth/google`);
-  console.log(`[license-server] Public key: ${BASE_URL}/api/license/public-key`);
+  console.log(`[license-server] Login URL:   ${BASE_URL}/auth/google`);
+  console.log(`[license-server] Public key:  ${BASE_URL}/api/license/public-key`);
+  console.log(`[license-server] Plans:        ${BASE_URL}/api/billing/plans`);
+  console.log(`[license-server] Webhook:      ${BASE_URL}/api/billing/webhook`);
 });
