@@ -36,12 +36,14 @@ const serverUrl = () => (process.env.LICENSE_SERVER_URL || 'http://localhost:345
 let _accessToken     = null;
 let _publicKeyPem    = null;
 let _refreshTimer    = null;
+let _lastKnownInfo   = null;
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /** Returns the current license info from the in-memory JWT payload. */
 export function getLicenseInfo() {
   if (!_accessToken) {
+    if (_lastKnownInfo) return { ..._lastKnownInfo };
     return { tier: 'unknown', max_hours_per_day: 0, status: 'unknown' };
   }
   try {
@@ -53,6 +55,7 @@ export function getLicenseInfo() {
       status:            payload?.status            ?? 'unknown',
     };
   } catch {
+    if (_lastKnownInfo) return { ..._lastKnownInfo };
     return { tier: 'unknown', max_hours_per_day: 0, status: 'unknown' };
   }
 }
@@ -64,11 +67,26 @@ export function getLicenseInfo() {
 export async function initLicense() {
   console.log('🔑 [License] Initializing license client...');
 
-  // 1. Fetch and cache the server's RSA public key
-  await fetchPublicKey();
+  const stored = loadLicenseFile();
+
+  // 1. Fetch and cache the server's RSA public key (soft-fail if stored license exists)
+  const pubKeyOk = await fetchPublicKey(!!stored?.refresh_token);
+  if (!pubKeyOk && stored?.refresh_token) {
+    console.warn('⚠️  [License] Could not reach license server at startup.');
+    console.warn('   Mining will continue with last-known license tier.');
+    _lastKnownInfo = {
+      tier:              stored.tier,
+      max_hours_per_day: stored.max_hours_per_day,
+      status:            stored.status,
+    };
+    _accessToken = null;
+    scheduleBackgroundRefresh();
+    const info = getLicenseInfo();
+    console.log(`✅ [License] Authenticated (offline mode) — Tier: ${info.tier}, Max hours/day: ${info.max_hours_per_day === 24 ? 'unlimited' : info.max_hours_per_day}`);
+    return;
+  }
 
   // 2. Attempt refresh from stored token, fall back to fresh login
-  const stored = loadLicenseFile();
   if (stored?.refresh_token) {
     const ok = await attemptRefresh(stored.refresh_token, /*isStartup=*/true);
     if (!ok) {
@@ -88,7 +106,7 @@ export async function initLicense() {
 
 // ─── Public key ──────────────────────────────────────────────────────────────
 
-async function fetchPublicKey() {
+async function fetchPublicKey(allowSoftFail = false) {
   const url = `${serverUrl()}/api/license/public-key`;
   let lastErr;
   // Retry up to 4 times with exponential backoff before giving up
@@ -98,7 +116,7 @@ async function fetchPublicKey() {
       if (!pem.includes('BEGIN PUBLIC KEY')) throw new Error('Response does not look like a PEM public key');
       _publicKeyPem = pem;
       console.log(`🔐 [License] RSA public key fetched from ${url}`);
-      return;
+      return true;
     } catch (err) {
       lastErr = err;
       if (attempt < 3) {
@@ -106,6 +124,9 @@ async function fetchPublicKey() {
         await sleep(wait);
       }
     }
+  }
+  if (allowSoftFail) {
+    return false;
   }
   throw new Error(`[License] Could not fetch public key from license server: ${lastErr?.message}. Is license-server running at ${serverUrl()}?`);
 }
@@ -191,7 +212,11 @@ async function attemptRefresh(refreshToken, isStartup = false) {
       // Load stored tier/status into memory so getLicenseInfo() works
       const stored = loadLicenseFile();
       if (stored) {
-        // Synthesise a minimal in-memory state from stored file (no access_token)
+        _lastKnownInfo = {
+          tier:              stored.tier,
+          max_hours_per_day: stored.max_hours_per_day,
+          status:            stored.status,
+        };
         _accessToken = null; // will be null until next successful refresh
       }
       return true; // Don't fall to login flow — server may just be unreachable
@@ -225,6 +250,12 @@ async function storeAndVerify(tokenResponse) {
 
   // Store access_token in memory only
   _accessToken = access_token;
+
+  _lastKnownInfo = {
+    tier:              payload.tier,
+    max_hours_per_day: payload.max_hours_per_day,
+    status:            payload.status,
+  };
 
   // Persist plan metadata + refresh_token to disk (atomic write)
   const licenseData = {
