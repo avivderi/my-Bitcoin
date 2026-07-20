@@ -762,6 +762,10 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
 
     if (limitReachedPaused) {
       limitReachedPaused = false;
+      miningPaused = false;
+      coolingMode = false;
+      currentRampLimit = 1;
+      console.log('⚡ תוכנית הרישיון שודרגה/הורחבה! מגבלת השעות התעדכנה. מחדש את הכרייה...');
     }
 
     if (miningPaused) {
