@@ -20,3 +20,17 @@ export function requireJwt(req, res, next) {
     return res.status(401).json({ error: 'Invalid or expired access token' });
   }
 }
+
+/**
+ * Express middleware: requires a valid JWT with tier === 'admin'.
+ * On success, calls next().
+ * On failure, returns 401 (if no valid JWT) or 403 (if not admin).
+ */
+export function requireAdmin(req, res, next) {
+  requireJwt(req, res, () => {
+    if (req.user?.tier !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    next();
+  });
+}

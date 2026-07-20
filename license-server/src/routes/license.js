@@ -20,19 +20,20 @@ function getActiveSubscription(userId) {
 // ── Helper: build signed JWT + issue fresh refresh token ─────────────────────
 function issueTokenPair(user) {
   const sub = getActiveSubscription(user.id);
-  if (!sub) throw new Error('No active subscription for user');
+  if (!sub && !user.is_admin) throw new Error('No active subscription for user');
 
+  const isAdmin = Boolean(user.is_admin);
   const jti = generateId('tok');
 
-  // JWT payload — exactly what we agreed: sub, tier, max_hours_per_day, status, jti
+  // JWT payload — override tier and max_hours_per_day for admin users
   const payload = {
     sub:               user.id,
     google_id:         user.google_id,
     email:             user.email,
     display_name:      user.display_name ?? '',
-    tier:              sub.tier,
-    max_hours_per_day: sub.max_hours_per_day,
-    status:            sub.status,
+    tier:              isAdmin ? 'admin'  : sub.tier,
+    max_hours_per_day: isAdmin ? 24       : sub.max_hours_per_day,
+    status:            isAdmin ? 'active' : sub.status,
     // iat and exp are added automatically by jsonwebtoken
   };
 

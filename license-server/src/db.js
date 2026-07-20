@@ -21,6 +21,7 @@ db.exec(`
     google_id    TEXT UNIQUE NOT NULL,
     email        TEXT NOT NULL,
     display_name TEXT,
+    is_admin     INTEGER NOT NULL DEFAULT 0,
     created_at   INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
@@ -81,5 +82,12 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_stripe_cus_user ON stripe_customers(user_id);
   CREATE INDEX IF NOT EXISTS idx_stripe_cus_id   ON stripe_customers(stripe_customer_id);
 `);
+
+// Idempotent migration for existing SQLite databases
+try {
+  db.exec('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0');
+} catch {
+  // Column already exists — ignore
+}
 
 export default db;

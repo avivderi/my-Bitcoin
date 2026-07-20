@@ -10,6 +10,7 @@ import { generateId } from './utils.js';
 import authRouter    from './routes/auth.js';
 import licenseRouter from './routes/license.js';
 import billingRouter, { stripeWebhookHandler, billingSuccessPage, billingCancelPage } from './routes/billing.js';
+import adminRouter   from './routes/admin.js';
 
 // ── RSA key pair must be loaded before any route signs a token ───────────────
 loadOrGenerateKeys();
@@ -38,6 +39,11 @@ app.use(session({
   },
 }));
 
+function getAdminEmails() {
+  const raw = process.env.ADMIN_EMAILS || '';
+  return raw.split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+}
+
 // ── Passport: Google OAuth 2.0 ────────────────────────────────────────────────
 passport.use(new GoogleStrategy(
   {
@@ -47,17 +53,20 @@ passport.use(new GoogleStrategy(
   },
   (_accessToken, _refreshToken, profile, done) => {
     try {
+      const email = (profile.emails?.[0]?.value ?? '').trim().toLowerCase();
+      const adminEmails = getAdminEmails();
+      const isAdmin = adminEmails.includes(email) ? 1 : 0;
+
       let user = db.prepare('SELECT * FROM users WHERE google_id = ?').get(profile.id);
 
       if (!user) {
         const userId      = generateId('usr');
-        const email       = profile.emails?.[0]?.value ?? '';
         const displayName = profile.displayName ?? '';
 
         db.prepare(`
-          INSERT INTO users (id, google_id, email, display_name, created_at)
-          VALUES (?, ?, ?, ?, unixepoch())
-        `).run(userId, profile.id, email, displayName);
+          INSERT INTO users (id, google_id, email, display_name, is_admin, created_at)
+          VALUES (?, ?, ?, ?, ?, unixepoch())
+        `).run(userId, profile.id, email, displayName, isAdmin);
 
         // Every new user starts on the free tier (Phase 2 will add Stripe upgrades)
         db.prepare(`
@@ -67,6 +76,13 @@ passport.use(new GoogleStrategy(
         `).run(generateId('sub'), userId);
 
         user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+      } else {
+        // Update is_admin status on every login (supports revoking via ADMIN_EMAILS)
+        db.prepare(`
+          UPDATE users SET is_admin = ?, email = ?, display_name = ? WHERE id = ?
+        `).run(isAdmin, email, profile.displayName ?? user.display_name, user.id);
+        user.is_admin = isAdmin;
+        user.email = email;
       }
 
       return done(null, user);
@@ -90,6 +106,7 @@ app.use(passport.session());
 app.use('/auth',         authRouter);
 app.use('/api/license',  licenseRouter);
 app.use('/api/billing',  billingRouter);
+app.use('/api/admin',    adminRouter);
 
 // Browser-facing pages opened after Stripe checkout redirect
 app.get('/billing/success', billingSuccessPage);
