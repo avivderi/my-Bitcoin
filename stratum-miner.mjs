@@ -421,9 +421,76 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
       bestDifficultyHash = data.best_difficulty_hash || '';
       console.log(`📊 נתונים קודמים נטענו מ-stats.json: נמצאו ${sharesFound}, התקבלו ${sharesAccepted}, נדחו ${sharesRejected}, קושי שיא: ${bestDifficulty}`);
     }
-  } catch (e) {
-    console.error('שגיאה בטעינת stats.json:', e.message);
+  // ─── Daily Mining Usage Tracking (usage.json) ─────────────────────────────
+  function getLocalDateString() {
+    const d = new Date();
+    const pad = (n) => n.toString().padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   }
+
+  let currentMiningDate = getLocalDateString();
+  let secondsMinedToday = 0;
+  let limitReachedPaused = false;
+
+  function loadUsageSync() {
+    try {
+      if (fs.existsSync('usage.json')) {
+        const data = JSON.parse(fs.readFileSync('usage.json', 'utf8'));
+        const today = getLocalDateString();
+        if (data.date === today) {
+          secondsMinedToday = data.seconds_mined || 0;
+          currentMiningDate = today;
+        } else {
+          secondsMinedToday = 0;
+          currentMiningDate = today;
+          saveUsageSync();
+        }
+      }
+    } catch (e) {
+      console.error('שגיאה בטעינת usage.json:', e.message);
+    }
+  }
+
+  function saveUsageSync() {
+    try {
+      const data = {
+        date: currentMiningDate,
+        seconds_mined: secondsMinedToday
+      };
+      const tempPath = 'usage.json.tmp';
+      fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
+      fs.renameSync(tempPath, 'usage.json');
+    } catch (err) {
+      console.error('שגיאה בשמירת usage.json:', err.message);
+    }
+  }
+
+  loadUsageSync();
+
+  // 1-second interval ticker for usage tracking and midnight rollover
+  setInterval(() => {
+    const today = getLocalDateString();
+    if (today !== currentMiningDate) {
+      currentMiningDate = today;
+      secondsMinedToday = 0;
+      saveUsageSync();
+      if (limitReachedPaused) {
+        limitReachedPaused = false;
+        miningPaused = false;
+        coolingMode = false;
+        currentRampLimit = 1;
+        console.log('🌅 יום חדש החל (בחצות)! מגבלת השעות היומית אופסה. מחדש את הכרייה...');
+        checkSystemHealth();
+      }
+    }
+
+    if (!miningPaused && workers.length > 0) {
+      secondsMinedToday++;
+    }
+  }, 1000);
+
+  // Periodically save usage to disk every 60 seconds
+  setInterval(saveUsageSync, 60 * 1000);
 
   let totalHashesGlobalOffset = totalHashesGlobal; // שמירה על היסט של ההאשים הקודמים
   const appStartTime = Date.now();
@@ -664,10 +731,42 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
     systemHealth.temp = temp;
     systemHealth.load = parseFloat(load.toFixed(1));
     systemHealth.configuredCores = configuredCores;
-    
+
+    // ── Check daily mining hour limit enforcement ───────────────────────
+    const licenseInfo = getLicenseInfo();
+    let maxHours = licenseInfo.max_hours_per_day;
+    const tierName = licenseInfo.tier || 'free';
+
+    // Safe default for 'unknown' tier or 0 limit: free tier limit (2h/day)
+    if (tierName === 'unknown' || maxHours <= 0) {
+      maxHours = 2;
+    }
+
+    const unlimited = maxHours === 24;
+
+    if (!unlimited) {
+      const limitSeconds = maxHours * 3600;
+      if (secondsMinedToday >= limitSeconds) {
+        if (!limitReachedPaused) {
+          limitReachedPaused = true;
+          console.log(`⏸️ השרת הגיע למגבלת שעות הכרייה היומית (${(secondsMinedToday / 3600).toFixed(1)}h / ${maxHours}h בתוכנית ${tierName}). הכרייה הושהתה.`);
+        }
+        miningPaused = true;
+        systemHealth.status = 'paused';
+        systemHealth.recommendation = `Daily mining limit reached (${(secondsMinedToday / 3600).toFixed(1)}h / ${maxHours}h on your ${tierName} plan) - resumes at midnight or upgrade for more hours.`;
+        systemHealth.activeCores = 0;
+        adjustWorkers(0);
+        return;
+      }
+    }
+
+    if (limitReachedPaused) {
+      limitReachedPaused = false;
+    }
+
     if (miningPaused) {
       systemHealth.status = 'paused';
-      systemHealth.recommendation = 'הכרייה מושהית זמנית על ידי המשתמש (מצב קירור).';
+      systemHealth.recommendation = 'הכרייה מושהית כרגע ע"י המשתמש.';
       systemHealth.activeCores = 0;
       adjustWorkers(0);
       return;
@@ -1112,6 +1211,11 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
       }
 
       const licenseInfo = getLicenseInfo();
+      let maxH = licenseInfo.max_hours_per_day;
+      if (licenseInfo.tier === 'unknown' || maxH <= 0) maxH = 2;
+      const unlimited = maxH === 24;
+      const isLimitReached = limitReachedPaused || (!unlimited && secondsMinedToday >= maxH * 3600);
+
       const stats = {
         uptime_seconds: uptimeSec,
         shares_found: localSharesFound,
@@ -1136,8 +1240,16 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
         pending_shares_count: shareQueue.length + pendingSubmissions.size,
         license: {
           tier:              licenseInfo.tier,
-          max_hours_per_day: licenseInfo.max_hours_per_day,
+          max_hours_per_day: maxH,
           status:            licenseInfo.status,
+        },
+        usage: {
+          date:              currentMiningDate,
+          seconds_mined:     secondsMinedToday,
+          hours_mined:       parseFloat((secondsMinedToday / 3600).toFixed(2)),
+          max_hours_per_day: maxH,
+          unlimited:         unlimited,
+          limit_reached:     isLimitReached
         }
       };
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1940,23 +2052,37 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
         const wallet = data.wallet_address || 'bc1qwm58u3zaf63f0dx63qk5p867kps26ykf3uylcs';
         document.getElementById('walletAddress').innerText = wallet;
         
-        // Update license tier
-        if (data.license) {
+        // Update license tier & usage
+        if (data.license && data.usage) {
           const tier = data.license.tier || 'unknown';
-          const maxH = data.license.max_hours_per_day;
+          const maxH = data.usage.max_hours_per_day;
           const status = data.license.status || '';
-          const unlimited = maxH === 24;
+          const unlimited = data.usage.unlimited;
+          const minedH = (data.usage.seconds_mined / 3600).toFixed(1);
+          
           const tierLabel = tier.charAt(0).toUpperCase() + tier.slice(1);
-          const hoursLabel = unlimited ? 'ללא הגבלה' : `${maxH}h/יום`;
+          const limitStr = unlimited ? 'ללא הגבלה' : `${maxH}h/יום`;
+          const usageStr = `${minedH}h / ${limitStr}`;
+          
           const tierEl = document.getElementById('licenseTier');
-          tierEl.innerText = `${tierLabel} — ${hoursLabel}`;
-          if (status === 'active') tierEl.style.color = tier === 'pro' ? 'var(--primary)' : tier === 'basic' ? 'var(--accent)' : 'var(--text-muted)';
-          else tierEl.style.color = 'var(--error)';
+          tierEl.innerText = `${tierLabel} (${usageStr})`;
+          if (status === 'active' || tier !== 'unknown') {
+            tierEl.style.color = tier === 'pro' ? 'var(--primary)' : tier === 'basic' ? 'var(--accent)' : 'var(--text-muted)';
+          } else {
+            tierEl.style.color = 'var(--error)';
+          }
         }
         
         // Alert banner
         const alertBox = document.getElementById('alertBox');
-        if (data.health.status !== 'ok') {
+        if (data.usage && data.usage.limit_reached) {
+          const tierName = (data.license && data.license.tier) ? data.license.tier : 'free';
+          const maxH = data.usage.max_hours_per_day;
+          const hoursDisplay = maxH === 24 ? 'unlimited' : `${maxH}h`;
+          const minedH = (data.usage.seconds_mined / 3600).toFixed(1);
+          document.getElementById('alertDesc').innerText = `Daily mining limit reached (${minedH}h / ${hoursDisplay} on your ${tierName} plan) - resumes at midnight or upgrade for more hours.`;
+          alertBox.style.display = 'flex';
+        } else if (data.health.status !== 'ok') {
           document.getElementById('alertDesc').innerText = data.health.recommendation;
           alertBox.style.display = 'flex';
         } else {
@@ -2342,6 +2468,7 @@ ${(currentJob && currentJob.jobId !== jobId) ? `Analysis:        STALE JOB. Shar
   function handleExit() {
     originalLog(`\n\nסיכום: ${sharesFound} shares נמצאו, ${sharesAccepted} התקבלו, ${sharesRejected} נדחו.`);
     saveStatsSync();
+    saveUsageSync();
     if (socket) socket.end();
     workers.forEach(w => {
       w.intentionalStop = true;
